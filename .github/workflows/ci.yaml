@@ -79,6 +79,15 @@ jobs:
         with:
           go-version-file: "go.mod"
 
+      - name: Check Compute Provider Build Tags
+        run: |
+          set -o pipefail
+          if go list -deps ./wci | grep '^k8s\.io/' > /dev/null; then
+            echo "default WCI build unexpectedly includes Kubernetes dependencies"
+            exit 1
+          fi
+          go test -run '^$' -tags=computeprovider_kubernetes ./wci/workflow/compute_provider
+
       - name: Run Unit Tests
         env:
           REPORT: "true"
