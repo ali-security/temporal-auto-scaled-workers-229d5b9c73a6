@@ -28,6 +28,8 @@ func TestWCISuite(t *testing.T) {
 	t.Run("DeleteEmptyWorkerDeployment", testWCIDeleteEmptyWorkerDeployment)
 	t.Run("DeleteNonexistentWorkerDeployment", testWCIDeleteNonexistentWorkerDeployment)
 	t.Run("DescribeVersionReportsTaskQueueStats", testWCIDescribeVersionReportsTaskQueueStats)
+	t.Run("CreateDeploymentVersionIdempotent", testWCICreateDeploymentVersionIdempotent)
+	t.Run("CreateDeploymentVersionDeploymentNotFound", testWCICreateDeploymentVersionDeploymentNotFound)
 	t.Run("DescribeVersionReturnsCorrectComputeConfig", testWCIDescribeVersionReturnsCorrectComputeConfig)
 	t.Run("DescribeWorkerDeploymentNotFound", testWCIDescribeWorkerDeploymentNotFound)
 	t.Run("DescribeWorkerDeploymentVersionSummaries", testWCIDescribeWorkerDeploymentVersionSummaries)

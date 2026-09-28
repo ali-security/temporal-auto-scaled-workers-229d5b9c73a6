@@ -187,6 +187,83 @@ func testWCIDuplicateDeploymentVersionAlreadyExists(t *testing.T) {
 		"duplicate version create should return an AlreadyExists error, got: %v", err)
 }
 
+func testWCICreateDeploymentVersionIdempotent(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	createWorkerDeployment(t, env, deploymentName)
+
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        uuid.NewString(),
+	}
+	req := &workflowservice.CreateWorkerDeploymentVersionRequest{
+		Namespace:         namespace,
+		DeploymentVersion: version,
+		Identity:          "test-identity",
+		ComputeConfig:     testComputeConfig(),
+		RequestId:         uuid.NewString(),
+	}
+
+	_, err := cli.WorkflowService().CreateWorkerDeploymentVersion(ctx, req)
+	require.NoError(t, err)
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx, req)
+	require.NoError(t, err, "repeating a create with the same request_id should succeed")
+
+	// Wait for the version to be visible, then check it was only created once.
+	require.Eventually(t, func() bool {
+		resp, derr := cli.WorkflowService().DescribeWorkerDeployment(ctx,
+			&workflowservice.DescribeWorkerDeploymentRequest{
+				Namespace:      namespace,
+				DeploymentName: deploymentName,
+			})
+		if derr != nil {
+			return false
+		}
+		summaries := resp.GetWorkerDeploymentInfo().GetVersionSummaries()
+		return len(summaries) == 1 &&
+			summaries[0].GetDeploymentVersion().GetBuildId() == version.GetBuildId()
+	}, 60*time.Second, 500*time.Millisecond, "expected exactly one version after idempotent create")
+}
+
+func testWCICreateDeploymentVersionDeploymentNotFound(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        uuid.NewString(),
+	}
+
+	_, err := cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     testComputeConfig(),
+			RequestId:         uuid.NewString(),
+		})
+	require.Error(t, err)
+	var notFound *serviceerror.NotFound
+	require.ErrorAs(t, err, &notFound,
+		"creating a version under a missing deployment should return NotFound, got: %v", err)
+
+	// The rejected create must not have implicitly created the deployment.
+	_, err = cli.WorkflowService().DescribeWorkerDeployment(ctx,
+		&workflowservice.DescribeWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+		})
+	require.ErrorAs(t, err, &notFound,
+		"deployment should not exist after a rejected version create, got: %v", err)
+}
+
 func testWCIDescribeVersionReturnsCorrectComputeConfig(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
