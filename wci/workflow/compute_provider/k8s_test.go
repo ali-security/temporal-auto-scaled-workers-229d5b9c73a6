@@ -10,11 +10,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/rest"
 )
 
-func TestUpdateK8sDeploymentScale(t *testing.T) {
+func TestK8sUpdateWorkerSetSize(t *testing.T) {
 	const scalePath = "/apis/apps/v1/namespaces/test-namespace/deployments/test-deployment/scale"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,9 +42,11 @@ func TestUpdateK8sDeploymentScale(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client, err := dynamic.NewForConfig(&rest.Config{Host: server.URL})
-	require.NoError(t, err)
-	deployments := client.Resource(k8sDeploymentsResource).Namespace("test-namespace")
-
-	require.NoError(t, updateK8sDeploymentScale(t.Context(), deployments, "test-deployment", 3))
+	kubeconfig := fmt.Sprintf(`{"apiVersion":"v1","kind":"Config","clusters":[{"name":"test","cluster":{"server":%q}}],"contexts":[{"name":"test","context":{"cluster":"test"}}],"current-context":"test"}`, server.URL)
+	provider := &k8sComputeProvider{}
+	require.NoError(t, provider.UpdateWorkerSetSize(t.Context(), RequestContext{}, ComputeProviderConfig{
+		configK8sNamespace:  "test-namespace",
+		configK8sDeployment: "test-deployment",
+		configK8sKubeconfig: kubeconfig,
+	}, 3))
 }

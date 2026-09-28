@@ -66,10 +66,6 @@ func (p *k8sComputeProvider) UpdateWorkerSetSize(ctx context.Context, _ RequestC
 	}
 
 	deployments := client.Resource(k8sDeploymentsResource).Namespace(namespace)
-	return updateK8sDeploymentScale(ctx, deployments, deployment, count)
-}
-
-func updateK8sDeploymentScale(ctx context.Context, deployments dynamic.ResourceInterface, deployment string, count int32) error {
 	scale, err := deployments.Get(ctx, deployment, metav1.GetOptions{}, "scale")
 	if err != nil {
 		return fmt.Errorf("failed to get scale for deployment %q: %w", deployment, err)
