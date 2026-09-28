@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -16,7 +17,11 @@ import (
 )
 
 func TestK8sUpdateWorkerSetSize(t *testing.T) {
-	const scalePath = "/apis/apps/v1/namespaces/test-namespace/deployments/test-deployment/scale"
+	const (
+		scalePath             = "/apis/apps/v1/namespaces/test-namespace/deployments/test-deployment/scale"
+		desiredReplicas int32 = 3
+	)
+	var actualReplicas atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != scalePath || (r.Method != http.MethodGet && r.Method != http.MethodPut) {
@@ -29,10 +34,11 @@ func TestK8sUpdateWorkerSetSize(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "test-deployment"},
 		}
 		if r.Method == http.MethodPut {
-			if err := json.NewDecoder(r.Body).Decode(&scale); err != nil || scale.Spec.Replicas != 3 {
+			if err := json.NewDecoder(r.Body).Decode(&scale); err != nil {
 				http.Error(w, "invalid scale update", http.StatusBadRequest)
 				return
 			}
+			actualReplicas.Store(scale.Spec.Replicas)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(scale)
@@ -49,5 +55,6 @@ func TestK8sUpdateWorkerSetSize(t *testing.T) {
 		configK8sNamespace:  "test-namespace",
 		configK8sDeployment: "test-deployment",
 		configK8sKubeconfig: string(kubeconfig),
-	}, 3))
+	}, desiredReplicas))
+	require.Equal(t, desiredReplicas, actualReplicas.Load())
 }
