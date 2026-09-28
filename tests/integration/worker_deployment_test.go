@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	deploymentpb "go.temporal.io/api/deployment/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/server/tests/testcore"
@@ -37,9 +39,12 @@ func testWCICreateWorkerDeploymentSuccess(t *testing.T) {
 			DeploymentName: deploymentName,
 		})
 	require.NoError(t, err)
+	require.NotEmpty(t, descResp.GetConflictToken())
 	require.Equal(t, deploymentName, descResp.GetWorkerDeploymentInfo().GetName())
 	require.NotNil(t, descResp.GetWorkerDeploymentInfo().GetCreateTime())
 	require.Empty(t, descResp.GetWorkerDeploymentInfo().GetVersionSummaries())
+	// A nil current version means tasks are routed to unversioned workers.
+	require.Nil(t, descResp.GetWorkerDeploymentInfo().GetRoutingConfig().GetCurrentDeploymentVersion())
 }
 
 func testWCICreateWorkerDeploymentIdempotent(t *testing.T) {
@@ -166,6 +171,9 @@ func testWCIDescribeWorkerDeploymentVersionSummaries(t *testing.T) {
 		}
 		got := map[string]bool{}
 		for _, vs := range summaries {
+			if vs.GetStatus() == enumspb.WORKER_DEPLOYMENT_VERSION_STATUS_UNSPECIFIED || vs.GetCreateTime() == nil {
+				return false
+			}
 			got[vs.GetDeploymentVersion().GetBuildId()] = true
 		}
 		return got[buildID1] && got[buildID2]
@@ -188,6 +196,16 @@ func testWCIDeleteEmptyWorkerDeployment(t *testing.T) {
 			Identity:       "test-identity",
 		})
 	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		_, derr := cli.WorkflowService().DescribeWorkerDeployment(ctx,
+			&workflowservice.DescribeWorkerDeploymentRequest{
+				Namespace:      namespace,
+				DeploymentName: deploymentName,
+			})
+		var notFound *serviceerror.NotFound
+		return errors.As(derr, &notFound)
+	}, 30*time.Second, 500*time.Millisecond, "deleted deployment should return NotFound")
 }
 
 func testWCICannotDeleteWorkerDeploymentWithVersions(t *testing.T) {
