@@ -1,4 +1,4 @@
-//go:build computeprovider_kubernetes
+//go:build test_dep
 
 package computeprovider
 
