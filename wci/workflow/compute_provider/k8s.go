@@ -10,6 +10,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	// The full generated clientset substantially increases the Temporal server binary:
+	// "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -64,6 +66,10 @@ func (p *k8sComputeProvider) UpdateWorkerSetSize(ctx context.Context, _ RequestC
 	}
 
 	deployments := client.Resource(k8sDeploymentsResource).Namespace(namespace)
+	return updateK8sDeploymentScale(ctx, deployments, deployment, count)
+}
+
+func updateK8sDeploymentScale(ctx context.Context, deployments dynamic.ResourceInterface, deployment string, count int32) error {
 	scale, err := deployments.Get(ctx, deployment, metav1.GetOptions{}, "scale")
 	if err != nil {
 		return fmt.Errorf("failed to get scale for deployment %q: %w", deployment, err)
@@ -95,8 +101,6 @@ func (p *k8sComputeProvider) buildClientAndParams(config ComputeProviderConfig) 
 		return nil, "", "", err
 	}
 
-	// This provider only needs Deployments and their scale subresource; the dynamic
-	// client avoids linking every generated Kubernetes API into the Temporal server.
 	client, err := dynamic.NewForConfig(restConfig)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("failed to create kubernetes client: %w", err)
