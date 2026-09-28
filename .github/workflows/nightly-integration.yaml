@@ -23,10 +23,9 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version-file: "tests/go.mod"
+          go-version-file: "go.mod"
 
       - name: Update server to main
-        working-directory: tests
         run: |
           go get go.temporal.io/server@main
           go mod tidy

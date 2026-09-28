@@ -44,7 +44,7 @@ unit-test: clean-test-output
 integration-test:
 	@printf $(COLOR) "Run integration tests..."
 	@mkdir -p $(TEST_OUTPUT_ROOT)
-	@CGO_ENABLED=$(CGO_ENABLED) go test -C tests -tags=test_dep -timeout 300s ./integration/... $(INTEGRATION_TEST_FLAGS) $(INTEGRATION_REPORT_FLAGS) $(INTEGRATION_REPORT_REDIRECT)
+	@CGO_ENABLED=$(CGO_ENABLED) go test -tags=test_dep -timeout 300s ./tests/integration/... $(INTEGRATION_TEST_FLAGS) $(INTEGRATION_REPORT_FLAGS) $(INTEGRATION_REPORT_REDIRECT)
 
 test: unit-test integration-test
 

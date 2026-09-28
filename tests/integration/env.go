@@ -1,3 +1,5 @@
+//go:build test_dep
+
 // Package integration contains integration tests for WCI workflow logic.
 package integration
 

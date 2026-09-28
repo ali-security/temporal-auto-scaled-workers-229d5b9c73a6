@@ -1,3 +1,5 @@
+//go:build test_dep
+
 package integration
 
 import (
