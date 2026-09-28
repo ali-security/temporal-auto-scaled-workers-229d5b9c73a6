@@ -4,7 +4,6 @@ package computeprovider
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,45 +11,43 @@ import (
 	"github.com/stretchr/testify/require"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 func TestK8sUpdateWorkerSetSize(t *testing.T) {
 	const scalePath = "/apis/apps/v1/namespaces/test-namespace/deployments/test-deployment/scale"
-	scaleResponse := autoscalingv1.Scale{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "autoscaling/v1", Kind: "Scale"},
-		ObjectMeta: metav1.ObjectMeta{Name: "test-deployment", ResourceVersion: "1"},
-		Spec:       autoscalingv1.ScaleSpec{Replicas: 1},
-		Status:     autoscalingv1.ScaleStatus{Replicas: 1},
-	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != scalePath {
+		if r.URL.Path != scalePath || (r.Method != http.MethodGet && r.Method != http.MethodPut) {
 			http.NotFound(w, r)
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		switch r.Method {
-		case http.MethodGet:
-			_ = json.NewEncoder(w).Encode(scaleResponse)
-		case http.MethodPut:
-			var scale autoscalingv1.Scale
+		scale := autoscalingv1.Scale{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "autoscaling/v1", Kind: "Scale"},
+			ObjectMeta: metav1.ObjectMeta{Name: "test-deployment"},
+		}
+		if r.Method == http.MethodPut {
 			if err := json.NewDecoder(r.Body).Decode(&scale); err != nil || scale.Spec.Replicas != 3 {
 				http.Error(w, "invalid scale update", http.StatusBadRequest)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(scale)
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(scale)
 	}))
 	t.Cleanup(server.Close)
 
-	kubeconfig := fmt.Sprintf(`{"apiVersion":"v1","kind":"Config","clusters":[{"name":"test","cluster":{"server":%q}}],"contexts":[{"name":"test","context":{"cluster":"test"}}],"current-context":"test"}`, server.URL)
-	provider := &k8sComputeProvider{}
-	require.NoError(t, provider.UpdateWorkerSetSize(t.Context(), RequestContext{}, ComputeProviderConfig{
+	kubeconfig, err := clientcmd.Write(clientcmdapi.Config{
+		Clusters:       map[string]*clientcmdapi.Cluster{"test": {Server: server.URL}},
+		Contexts:       map[string]*clientcmdapi.Context{"test": {Cluster: "test"}},
+		CurrentContext: "test",
+	})
+	require.NoError(t, err)
+	require.NoError(t, (&k8sComputeProvider{}).UpdateWorkerSetSize(t.Context(), RequestContext{}, ComputeProviderConfig{
 		configK8sNamespace:  "test-namespace",
 		configK8sDeployment: "test-deployment",
-		configK8sKubeconfig: kubeconfig,
+		configK8sKubeconfig: string(kubeconfig),
 	}, 3))
 }
