@@ -99,7 +99,7 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 	if err != nil {
 		var resourceExhaustedErr *serviceerror.ResourceExhausted
 		if errors.As(err, &resourceExhaustedErr) && resourceExhaustedErr.Cause == enumspb.RESOURCE_EXHAUSTED_CAUSE_BUSY_WORKFLOW {
-			th.logger.Warn("Workflow busy when checking WCI workflow existence", tag.Error(err), tag.WorkflowID(workflowID))
+			// 'Workflow is busy' error - emit a metric and move on
 			iface.WorkerControllerInstanceWorkflowBusyCount.With(th.metricsHandler).Record(1)
 			return
 		}
