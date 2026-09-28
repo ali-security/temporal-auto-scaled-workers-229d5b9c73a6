@@ -1,4 +1,4 @@
-//go:build test_dep
+//go:build !release
 
 package computeprovider
 
@@ -8,7 +8,9 @@ import (
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -22,6 +24,8 @@ const (
 	configK8sKubeconfig = "kubeconfig"
 	configK8sContext    = "context"
 )
+
+var k8sDeploymentsResource = schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 
 type k8sComputeProvider struct{}
 
@@ -42,7 +46,7 @@ func (p *k8sComputeProvider) ValidateConfig(ctx context.Context, _ RequestContex
 	if err != nil {
 		return err
 	}
-	_, err = client.AppsV1().Deployments(namespace).Get(ctx, deployment, metav1.GetOptions{})
+	_, err = client.Resource(k8sDeploymentsResource).Namespace(namespace).Get(ctx, deployment, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("deployment %q not found in namespace %q: %w", deployment, namespace, err)
 	}
@@ -59,13 +63,16 @@ func (p *k8sComputeProvider) UpdateWorkerSetSize(ctx context.Context, _ RequestC
 		return err
 	}
 
-	scale, err := client.AppsV1().Deployments(namespace).GetScale(ctx, deployment, metav1.GetOptions{})
+	deployments := client.Resource(k8sDeploymentsResource).Namespace(namespace)
+	scale, err := deployments.Get(ctx, deployment, metav1.GetOptions{}, "scale")
 	if err != nil {
 		return fmt.Errorf("failed to get scale for deployment %q: %w", deployment, err)
 	}
 
-	scale.Spec.Replicas = count
-	_, err = client.AppsV1().Deployments(namespace).UpdateScale(ctx, deployment, scale, metav1.UpdateOptions{})
+	if err := unstructured.SetNestedField(scale.Object, int64(count), "spec", "replicas"); err != nil {
+		return fmt.Errorf("failed to set scale for deployment %q: %w", deployment, err)
+	}
+	_, err = deployments.Update(ctx, scale, metav1.UpdateOptions{}, "scale")
 	if err != nil {
 		return fmt.Errorf("failed to scale deployment %q to %d: %w", deployment, count, err)
 	}
@@ -73,7 +80,7 @@ func (p *k8sComputeProvider) UpdateWorkerSetSize(ctx context.Context, _ RequestC
 }
 
 // buildClientAndParams builds a Kubernetes client and extracts/validates namespace and deployment from config.
-func (p *k8sComputeProvider) buildClientAndParams(config ComputeProviderConfig) (kubernetes.Interface, string, string, error) {
+func (p *k8sComputeProvider) buildClientAndParams(config ComputeProviderConfig) (dynamic.Interface, string, string, error) {
 	namespace, ok := config[configK8sNamespace].(string)
 	if !ok || namespace == "" {
 		return nil, "", "", fmt.Errorf("namespace not found in config")
@@ -88,7 +95,7 @@ func (p *k8sComputeProvider) buildClientAndParams(config ComputeProviderConfig) 
 		return nil, "", "", err
 	}
 
-	client, err := kubernetes.NewForConfig(restConfig)
+	client, err := dynamic.NewForConfig(restConfig)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("failed to create kubernetes client: %w", err)
 	}

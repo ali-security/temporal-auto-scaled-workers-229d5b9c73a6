@@ -1,4 +1,4 @@
-//go:build test_dep
+//go:build computeprovider_subprocess && !release
 
 package computeprovider
 
