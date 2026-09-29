@@ -26,7 +26,7 @@ import (
 	"go.temporal.io/server/tests/testcore"
 )
 
-func TestWCIWorkerSetScaleUp(t *testing.T) {
+func testWCIWorkerSetScaleUp(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -111,7 +111,7 @@ func TestWCIWorkerSetScaleUp(t *testing.T) {
 	require.Equal(t, "foo", result)
 }
 
-func TestWCIWorkerSetCreateVersionInvalidComputeConfig(t *testing.T) {
+func testWCIWorkerSetCreateVersionInvalidComputeConfig(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -154,7 +154,7 @@ func TestWCIWorkerSetCreateVersionInvalidComputeConfig(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestWCIWorkerSetScaleUpPastOne(t *testing.T) {
+func testWCIWorkerSetScaleUpPastOne(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -198,7 +198,7 @@ func TestWCIWorkerSetScaleUpPastOne(t *testing.T) {
 // worker set once the backlog drains, eventually returning to 0. Scale-down only
 // happens on the metrics-poll path, so the test uses a fast poll cadence (the
 // production floor is 30s) and caps the worker set at 2 for a bounded, quick run.
-func TestWCIWorkerSetScaleDownToZero(t *testing.T) {
+func testWCIWorkerSetScaleDownToZero(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -236,7 +236,7 @@ func TestWCIWorkerSetScaleDownToZero(t *testing.T) {
 	awaitWorkerSetSize(t, events, 0, 90*time.Second, "scale-down to 0")
 }
 
-func TestWCIWorkerSetIncompatibleWithNoSync(t *testing.T) {
+func testWCIWorkerSetIncompatibleWithNoSync(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -274,7 +274,7 @@ func TestWCIWorkerSetIncompatibleWithNoSync(t *testing.T) {
 // versions on the same deployment scale up and down independently, each tracking
 // its own worker count. Their caps differ (v1=2, v2=1), so they reach different
 // sizes, and each drains back to 0 on its own observer without cross-talk.
-func TestWCIWorkerSetMultipleVersionsScaleIndependently(t *testing.T) {
+func testWCIWorkerSetMultipleVersionsScaleIndependently(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -341,7 +341,7 @@ func TestWCIWorkerSetMultipleVersionsScaleIndependently(t *testing.T) {
 // catch-all (no declared task types), so the existence check does not skip it, but the
 // registration resize is sized to the algorithm's planned count — re-asserting the current
 // size (2) rather than the pre-fix bare 1. The set therefore never shrinks.
-func TestWCIWorkerSetUpdateDoesNotShrinkLiveSet(t *testing.T) {
+func testWCIWorkerSetUpdateDoesNotShrinkLiveSet(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -379,7 +379,7 @@ func TestWCIWorkerSetUpdateDoesNotShrinkLiveSet(t *testing.T) {
 // update path: when the group declares exactly the task type its worker registers (workflow),
 // an update to the already-registered version emits no registration resize at all (only a
 // validate). Under the pre-fix behavior the update would resize the set to 1.
-func TestWCIWorkerSetUpdateOnRegisteredVersionSkipsResize(t *testing.T) {
+func testWCIWorkerSetUpdateOnRegisteredVersionSkipsResize(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -421,7 +421,7 @@ func TestWCIWorkerSetUpdateOnRegisteredVersionSkipsResize(t *testing.T) {
 
 // TestWCIWorkerSetRegistrationHonorsInitialCount verifies the registration resize is sized to
 // the scaler's planned count (initial_count), not a bare 1.
-func TestWCIWorkerSetRegistrationHonorsInitialCount(t *testing.T) {
+func testWCIWorkerSetRegistrationHonorsInitialCount(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()

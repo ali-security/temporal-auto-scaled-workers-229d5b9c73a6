@@ -27,7 +27,7 @@ import (
 	"go.temporal.io/server/tests/testcore"
 )
 
-func TestWCIInstanceLifecycle(t *testing.T) {
+func testWCIInstanceLifecycle(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -138,7 +138,7 @@ func TestWCIInstanceLifecycle(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestWCIDuplicateDeploymentVersionAlreadyExists(t *testing.T) {
+func testWCIDuplicateDeploymentVersionAlreadyExists(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -189,7 +189,7 @@ func TestWCIDuplicateDeploymentVersionAlreadyExists(t *testing.T) {
 		"duplicate version create should return an AlreadyExists error, got: %v", err)
 }
 
-func TestWCIDescribeVersionReturnsCorrectComputeConfig(t *testing.T) {
+func testWCIDescribeVersionReturnsCorrectComputeConfig(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -236,7 +236,7 @@ func TestWCIDescribeVersionReturnsCorrectComputeConfig(t *testing.T) {
 		"described compute config does not match the create request:\nwant: %v\ngot:  %v", cc, got)
 }
 
-func TestWCICreateVersionInvalidComputeConfig(t *testing.T) {
+func testWCICreateVersionInvalidComputeConfig(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -283,7 +283,7 @@ func TestWCICreateVersionInvalidComputeConfig(t *testing.T) {
 
 // TestWCIInvokeIncompatibleWithRateBased verifies the rate-based algorithm
 // (worker-set launch strategy) cannot be paired with the invoke test provider.
-func TestWCIInvokeIncompatibleWithRateBased(t *testing.T) {
+func testWCIInvokeIncompatibleWithRateBased(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -320,7 +320,7 @@ func TestWCIInvokeIncompatibleWithRateBased(t *testing.T) {
 	require.ErrorContains(t, err, "not compatible")
 }
 
-func TestWCIUpdateVersionInvalidComputeConfig(t *testing.T) {
+func testWCIUpdateVersionInvalidComputeConfig(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -381,7 +381,7 @@ func TestWCIUpdateVersionInvalidComputeConfig(t *testing.T) {
 		"described compute config does not match the create request:\nwant: %v\ngot:  %v", cc, got)
 }
 
-func TestWCIUpdateAndRemoveVersionComputeConfig(t *testing.T) {
+func testWCIUpdateAndRemoveVersionComputeConfig(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -474,7 +474,7 @@ func scaleUpWorkflow(_ workflow.Context) (string, error) {
 	return "foo", nil
 }
 
-func TestWCIScaleUp(t *testing.T) {
+func testWCIScaleUp(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -566,7 +566,7 @@ func TestWCIScaleUp(t *testing.T) {
 // task queue. For server scaled workers, this requires WCI to trigger a compute scale-up (invoke call here), in order for a
 // worker to start. This test asserts that the version moves to inactive after initial poll from worker which is
 // invoked via compute provider.
-func TestWCIVersionInactiveAfterInvoke(t *testing.T) {
+func testWCIVersionInactiveAfterInvoke(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -643,7 +643,7 @@ func TestWCIVersionInactiveAfterInvoke(t *testing.T) {
 // only affects unversioned tasks. If you explicitly specify version in workflow execution, the "inactive" version can
 // still be used. This test asserts that the even though multiple versions are inactive, they will process their
 // corresponding workflow tasks (versioned).
-func TestWCIMultipleVersionsInvokeWithPinnedWorkflows(t *testing.T) {
+func testWCIMultipleVersionsInvokeWithPinnedWorkflows(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -794,7 +794,7 @@ func TestWCIMultipleVersionsInvokeWithPinnedWorkflows(t *testing.T) {
 // active pollers on at least one task queue to current. Verifies the routing
 // config reflects the new current version and that the version's
 // current_since_time is set.
-func TestWCISetCurrentVersionHappyPath(t *testing.T) {
+func testWCISetCurrentVersionHappyPath(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -839,7 +839,7 @@ func TestWCISetCurrentVersionHappyPath(t *testing.T) {
 // traffic back to unversioned workers. Verifies the routing config clears the
 // current deployment version and that the previously current version's status
 // transitions away from CURRENT.
-func TestWCISetCurrentVersionToUnversioned(t *testing.T) {
+func testWCISetCurrentVersionToUnversioned(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -901,7 +901,7 @@ func TestWCISetCurrentVersionToUnversioned(t *testing.T) {
 //   - with ignore_missing_task_queues=false the promotion is rejected
 //     (FailedPrecondition);
 //   - with ignore_missing_task_queues=true it succeeds.
-func TestWCISetCurrentVersionMissingTaskQueuesAndOverride(t *testing.T) {
+func testWCISetCurrentVersionMissingTaskQueuesAndOverride(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1027,7 +1027,7 @@ func TestWCISetCurrentVersionMissingTaskQueuesAndOverride(t *testing.T) {
 // SetWorkerDeploymentCurrentVersion rejects a mutation carrying a stale conflict
 // token: capture a token, advance the routing revision with a successful
 // SetCurrent, then replay the stale token and expect a FailedPrecondition.
-func TestWCISetCurrentVersionStaleConflictToken(t *testing.T) {
+func testWCISetCurrentVersionStaleConflictToken(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1075,7 +1075,7 @@ func TestWCISetCurrentVersionStaleConflictToken(t *testing.T) {
 // SetWorkerDeploymentRampingVersion sets a version as the ramping version at a
 // given percentage. Verifies the routing config reflects the ramping version
 // and percentage, and that the version's status becomes RAMPING.
-func TestWCISetRampingVersionHappyPath(t *testing.T) {
+func testWCISetRampingVersionHappyPath(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1121,7 +1121,7 @@ func TestWCISetRampingVersionHappyPath(t *testing.T) {
 // SetWorkerDeploymentRampingVersion with an empty build_id clears the ramping
 // version entirely. Verifies the routing config's ramping version is cleared
 // and percentage reset to 0, and that the previously ramping version drains.
-func TestWCISetRampingVersionClear(t *testing.T) {
+func testWCISetRampingVersionClear(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1183,7 +1183,7 @@ func TestWCISetRampingVersionClear(t *testing.T) {
 
 // SetWorkerDeploymentRampingVersion rejects setting the ramping version to the
 // version that is already current.
-func TestWCISetRampingVersionSameAsCurrent(t *testing.T) {
+func testWCISetRampingVersionSameAsCurrent(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1207,7 +1207,7 @@ func TestWCISetRampingVersionSameAsCurrent(t *testing.T) {
 }
 
 // SetWorkerDeploymentRampingVersion rejects ramp percentages outside [0, 100].
-func TestWCISetRampingVersionInvalidPercentage(t *testing.T) {
+func testWCISetRampingVersionInvalidPercentage(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1233,7 +1233,7 @@ func TestWCISetRampingVersionInvalidPercentage(t *testing.T) {
 
 // SetWorkerDeploymentManager sets the manager identity on a deployment that has
 // none, and the value is persisted.
-func TestWCISetManagerHappyPath(t *testing.T) {
+func testWCISetManagerHappyPath(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1281,7 +1281,7 @@ func TestWCISetManagerHappyPath(t *testing.T) {
 }
 
 // SetWorkerDeploymentManager replaces an existing manager identity.
-func TestWCISetManagerOverride(t *testing.T) {
+func testWCISetManagerOverride(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1335,7 +1335,7 @@ func TestWCISetManagerOverride(t *testing.T) {
 // SetWorkerDeploymentManager rejects a mutation carrying a stale conflict token:
 // capture a token, advance the revision with a successful SetManager, then
 // replay the stale token and expect a FailedPrecondition.
-func TestWCISetManagerStaleConflictToken(t *testing.T) {
+func testWCISetManagerStaleConflictToken(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1391,7 +1391,7 @@ func TestWCISetManagerStaleConflictToken(t *testing.T) {
 
 // Once a deployment has a manager identity, a routing mutation (SetCurrent) from
 // a different identity is rejected with FailedPrecondition.
-func TestWCIManagerIdentityEnforcedOnSetCurrent(t *testing.T) {
+func testWCIManagerIdentityEnforcedOnSetCurrent(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1579,7 +1579,7 @@ func setupCurrentPlusSecondVersion(
 }
 
 // Asserts thats you cannot delete a WDV if it is the current version.
-func TestWCICannotDeleteCurrentVersion(t *testing.T) {
+func testWCICannotDeleteCurrentVersion(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1619,7 +1619,7 @@ func TestWCICannotDeleteCurrentVersion(t *testing.T) {
 }
 
 // Asserts thats you cannot delete a WDV if it is currently ramping.
-func TestWCICannotDeleteRampingVersion(t *testing.T) {
+func testWCICannotDeleteRampingVersion(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1661,7 +1661,7 @@ func TestWCICannotDeleteRampingVersion(t *testing.T) {
 }
 
 // Asserts thats you cannot delete a WDV if it is currently has status DRAINING.
-func TestWCICannotDeleteDrainingVersion(t *testing.T) {
+func testWCICannotDeleteDrainingVersion(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1751,7 +1751,7 @@ func TestWCICannotDeleteDrainingVersion(t *testing.T) {
 }
 
 // Having active pollers prevents a draining version from deleting, even with the override field
-func TestWCICannotDeleteDrainingVersionWithOverrideDueToActivePollers(t *testing.T) {
+func testWCICannotDeleteDrainingVersionWithOverrideDueToActivePollers(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1829,7 +1829,7 @@ func TestWCICannotDeleteDrainingVersionWithOverrideDueToActivePollers(t *testing
 }
 
 // You can override the DRAINING state check for delete if there are no active pollers
-func TestWCICanDeleteDrainingVersionWithOverride(t *testing.T) {
+func testWCICanDeleteDrainingVersionWithOverride(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -1918,7 +1918,7 @@ func TestWCICanDeleteDrainingVersionWithOverride(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestWCIDescribeVersionReportsTaskQueueStats(t *testing.T) {
+func testWCIDescribeVersionReportsTaskQueueStats(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()

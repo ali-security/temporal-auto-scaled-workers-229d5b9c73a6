@@ -21,14 +21,14 @@ const (
 	testVersionDrainageVisibilityGracePeriod = 1 * time.Second
 )
 
-// createWCITestEnv starts an in-process Temporal server with the WCI worker component registered
-// and returns a TestEnv ready for use. Cleanup is registered via t.Cleanup.
+// createWCITestEnv returns a TestEnv backed by the suite-scoped cluster registered via
+// testcore.UseSuiteScopedCluster on the calling top-level test (see TestWCISuite). The worker
+// service is already enabled on suite-scoped clusters, so this lets every WCI scenario share one
+// cluster boot instead of each starting its own.
 func createWCITestEnv(t *testing.T) *testcore.TestEnv {
 	t.Helper()
 
 	return testcore.NewEnv(t,
-		testcore.WithDedicatedCluster(),
-		testcore.WithWorkerService("WCI"),
 		testcore.WithDynamicConfig(client.WorkerControllerEnabled, true),
 		testcore.WithDynamicConfig(client.WorkerControllerEnabledComputeProviders, []string{
 			string(iface.ComputeProviderTypeTestInvoke),
