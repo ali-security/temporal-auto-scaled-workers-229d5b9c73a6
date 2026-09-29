@@ -341,7 +341,7 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 				}
 				if err := provider.UpdateWorkerSetSize(ctx, req.RequestContext, config, *action.Count); err != nil {
 					recordError(wcimetrics.ErrorTypeComputeProviderFailed)
-					return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvokeWorkerFailed", err)
+					return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "UpdateWorkerSetSizeFailed", err)
 				}
 			default:
 				recordError(wcimetrics.ErrorTypeInvalidRequest)
@@ -427,7 +427,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 	defer cancel()
 	if err := provider.UpdateWorkerSetSize(timeoutCtx, req.RequestContext, config, req.UpdatedSize); err != nil {
 		recordError(computeProviderErrorType(err))
-		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
+		return temporal.NewApplicationErrorWithCause(err.Error(), "UpdateWorkerSetSizeFailed", err)
 	}
 
 	recordSuccess()
