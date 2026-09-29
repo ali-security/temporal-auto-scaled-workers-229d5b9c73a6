@@ -41,10 +41,9 @@ git fetch origin main
 git switch -c "${RELEASE_BRANCH}" "${BASE}"
 
 # The resolver prints the earliest build tag containing the commit go.mod points at.
-# Pin that, or a later build you've validated, in both modules.
+# Pin that, or a later build you've validated.
 TAG=$(EMIT=tag bash .github/scripts/resolve-server-suffix.sh)   # e.g. v1.32.0-158.0
 go get "go.temporal.io/server@${TAG}" && go mod tidy
-( cd tests && go get "go.temporal.io/server@${TAG}" && go mod tidy )   # tests/ is a separate module
 git commit -am "chore: pin go.temporal.io/server ${TAG}"
 
 git push -u origin "${RELEASE_BRANCH}"  # this triggers .github/workflows/release-auto-tag.yml
@@ -60,13 +59,11 @@ Pushing the branch runs **`release-auto-tag.yml`**, which validates, then tags:
 
 - `check-pin` guards that `go.mod`'s server pin is a build-tag release. Anything else —
   a pseudo-version, or a plain `vX.Y.Z` — fails, and it prints the repin command,
-  naming the exact build tag when `resolve-server-suffix.sh` can resolve one. It reads
-  the root `go.mod`; `tests/go.mod` is covered by `ci.yaml`'s go.mod sync check below.
-- `ci` and `lint` run the same gates a PR runs — `ci.yaml` (go.mod sync between the
-  root and `tests/`, unit tests, integration tests) and `golangci-lint.yaml` — against
-  the commit being released. Both are called, not merely triggered, so they block the
-  tag push instead of racing it. Lint covers the whole tree here; on a PR it is
-  limited to the diff.
+  naming the exact build tag when `resolve-server-suffix.sh` can resolve one.
+- `ci` and `lint` run the same gates a PR runs — `ci.yaml` (unit tests, integration
+  tests) and `golangci-lint.yaml` — against the commit being released. Both are called,
+  not merely triggered, so they block the tag push instead of racing it. Lint covers
+  the whole tree here; on a PR it is limited to the diff.
 - `auto-tag` runs `.github/scripts/compute-release-tag.sh` and pushes what it returns:
   the next WCI patch on the `vMAJOR.MINOR.*` version (seeding at `.0`), suffixed with the
   pinned build tag flattened by `resolve-server-suffix.sh` (`v1.32.0-158.3` flattens to
