@@ -115,11 +115,13 @@ jobs:
 
   integration-test:
     runs-on: ubuntu-24.04-arm
+    # Do not set TEMPORAL_ROOT here: suite-scoped test clusters load
+    # schema/sqlite/v3 via testcore's GetRepoRootDirectory(), which only
+    # resolves correctly through its GOMODCACHE fallback (this repo doesn't
+    # vendor the server's schema files). Setting TEMPORAL_ROOT to the
+    # workspace root breaks that lookup.
     env:
       TEST_OUTPUT_ROOT: ${{ github.workspace }}/reports
-      # Server testcore writes to $TEMPORAL_ROOT/.testoutput; default resolves into
-      # the read-only module cache when server is a dependency.
-      TEMPORAL_ROOT: ${{ github.workspace }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

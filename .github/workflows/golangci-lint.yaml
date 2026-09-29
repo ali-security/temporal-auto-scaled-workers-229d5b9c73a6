@@ -35,3 +35,27 @@ jobs:
             ${{ (github.event_name == 'pull_request'
               && format('--new-from-rev={0}', github.event.pull_request.base.sha))
             || '' }}
+
+  golangci-tests:
+    name: lint (tests module)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      # tests/ is its own Go module (see tests/go.mod), so it needs its own
+      # golangci-lint invocation: linting from the repo root never sees it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: "tests/go.mod"
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.12
+          working-directory: tests
+          args: >-
+            --build-tags=test_dep
+            ${{ (github.event_name == 'pull_request'
+              && format('--new-from-rev={0}', github.event.pull_request.base.sha))
+            || '' }}
