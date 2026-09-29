@@ -9,9 +9,8 @@ import (
 // TestWCISuite runs every WCI integration scenario as a subtest sharing one
 // suite-scoped cluster (testcore.UseSuiteScopedCluster), instead of each
 // scenario booting its own dedicated in-process Temporal server. Scenario
-// bodies live in wci_test.go, worker_deployment_test.go, and
-// worker_set_test.go as lowercase testWCI* functions so `go test` only
-// discovers this single entry point.
+// bodies live in the other test files of this package, as unexported
+// testWCI* functions,  so `go test` only discovers this single entry point.
 func TestWCISuite(t *testing.T) {
 	testcore.UseSuiteScopedCluster(t) //nolint:staticcheck // SA1019: suite reuses one worker-service cluster to avoid per-test cluster churn.
 
