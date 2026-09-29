@@ -3,6 +3,10 @@ package computeprovider
 import (
 	"context"
 	"errors"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -41,7 +45,16 @@ func classifyGCPFailure(err error) FailureClass {
 		case codes.ResourceExhausted:
 			return FailureThrottled
 		case codes.Unauthenticated:
-			// A rejected token is worker-controller's own credential problem.
+			// gRPC reports a token the API rejected and a token we never managed to
+			// mint under the same code; only the former is our credential problem.
+			if code, ok := credentialFetchStatus(st); ok {
+				switch {
+				case code >= http.StatusInternalServerError:
+					return FailureUnavailable
+				case code == http.StatusTooManyRequests:
+					return FailureThrottled
+				}
+			}
 			return FailureInternal
 		case codes.Canceled, codes.OK:
 			return FailureUnclassified
@@ -71,4 +84,32 @@ func classifyGCPFailure(err error) FailureClass {
 		return FailureUnavailable
 	}
 	return ownerFault
+}
+
+// credsFetchMarker identifies a gRPC status produced while fetching per-RPC
+// credentials rather than by the RPC itself. grpc-go renders the underlying
+// error with %v, so the message is the only place it survives.
+const credsFetchMarker = "per-RPC creds failed"
+
+// upstreamStatusRE pulls the token endpoint's HTTP status out of that message, as
+// google.golang.org/api/impersonate and x/oauth2 respectively render it.
+var upstreamStatusRE = regexp.MustCompile(`(?:status code|cannot fetch token:) (\d{3})`)
+
+// credentialFetchStatus reports the HTTP status the token endpoint returned when
+// st describes a failed credential fetch. This separates an upstream outage from
+// a genuinely rejected token, which gRPC flattens into one code.
+func credentialFetchStatus(st *status.Status) (int, bool) {
+	msg := st.Message()
+	if !strings.Contains(msg, credsFetchMarker) {
+		return 0, false
+	}
+	m := upstreamStatusRE.FindStringSubmatch(msg)
+	if m == nil {
+		return 0, false
+	}
+	code, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return code, true
 }

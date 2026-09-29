@@ -37,6 +37,19 @@ func TestClassifyGCPFailure(t *testing.T) {
 
 		// A rejected token is worker-controller's own credential problem.
 		{"unauthenticated", status.Error(codes.Unauthenticated, "bad token"), FailureInternal},
+		{"creds fetch 401", status.Error(codes.Unauthenticated, credsFetchErr(401)), FailureInternal},
+		{"creds fetch 403", status.Error(codes.Unauthenticated, credsFetchErr(403)), FailureInternal},
+
+		// ...but a token endpoint that was down or throttling us is not.
+		{"creds fetch 503", status.Error(codes.Unauthenticated, credsFetchErr(503)), FailureUnavailable},
+		{"creds fetch 500", status.Error(codes.Unauthenticated, credsFetchErr(500)), FailureUnavailable},
+		{"creds fetch 429", status.Error(codes.Unauthenticated, credsFetchErr(429)), FailureThrottled},
+		{"creds fetch oauth2 503", status.Error(codes.Unauthenticated,
+			"transport: per-RPC creds failed due to error: oauth2: cannot fetch token: 503 Service Unavailable"), FailureUnavailable},
+
+		// A 503 in the RPC's own body must not be mistaken for a creds-fetch status.
+		{"unauthenticated body mentions 503", status.Error(codes.Unauthenticated,
+			`token rejected: {"code": 503}`), FailureInternal},
 
 		// Customer-owned client faults, narrowed by code.
 		{"not found", status.Error(codes.NotFound, "no pool"), FailureNotFound},
@@ -56,6 +69,8 @@ func TestClassifyGCPFailure(t *testing.T) {
 
 		// Classification must survive the wrapping the provider applies.
 		{"wrapped", fmt.Errorf("failed to update worker pool %q: %w", "wp", status.Error(codes.Unavailable, "x")), FailureUnavailable},
+		{"wrapped creds fetch 503", fmt.Errorf("failed to update worker pool %q: %w", "wp",
+			status.Error(codes.Unauthenticated, credsFetchErr(503))), FailureUnavailable},
 	}
 
 	for _, tc := range cases {
@@ -96,4 +111,11 @@ func TestGCPCloudRunUpdateWorkerSetSize_ClassifiesMissingConfigAsRejected(t *tes
 	var pErr *ProviderError
 	require.ErrorAs(t, err, &pErr)
 	assert.Equal(t, FailureRejected, pErr.Class)
+}
+
+// credsFetchErr reproduces how grpc-go surfaces an impersonation failure: the
+// token endpoint's HTTP status survives only in the status message.
+func credsFetchErr(code int) string {
+	return fmt.Sprintf("transport: per-RPC creds failed due to error: impersonate: status code %d: "+
+		`{"error": {"code": %d, "message": "Unable to extract the resource from the request.", "status": "UNAVAILABLE"}}`, code, code)
 }
