@@ -17,6 +17,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
+	wciworkflow "go.temporal.io/auto-scaled-workers/wci/workflow"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	sdkclient "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -759,6 +760,137 @@ func testWCIScaleUpAfterComputeConfigUpdate(t *testing.T) {
 	defer cancel()
 	require.NoError(t, run.Get(getCtx, &result))
 	require.Equal(t, "foo", result)
+}
+
+// The periodic metrics poll keeps invoking workers while a backlog persists,
+// independently of task-add signals.
+func testWCIMetricsPollInvokesOnBacklog(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID := uuid.NewString()
+	taskQueue := "poll-invoke-tq-" + deploymentName
+
+	// Observe provider invocations for this build before anything can fire one.
+	spy := &invokeSpy{events: make(chan string, 16)}
+	t.Cleanup(computeprovider.SetComputeObserver(buildID, spy))
+	events := spy.events
+
+	// Poll on a fast cadence so the poll-driven invoke fires within the test's
+	// deadline instead of the production 5m/30s intervals.
+	t.Cleanup(wciworkflow.SetPollIntervalsForTest(2*time.Second, 1*time.Second))
+
+	// Create the parent deployment, then a version backed by the no-op
+	// test-invoke provider with the no-sync scaler.
+	createWorkerDeployment(t, env, deploymentName)
+	createVersion(t, env, deploymentName, buildID)
+
+	// WCI validates the spec then invokes workers to register task queues: first invoke.
+	waitForInvoke(t, events, 60*time.Second, "register-task-queues invoke")
+
+	// React: briefly bring up a versioned worker so the task queue registers
+	// against this version, then drop it so a backlog can form.
+	registerVersionTaskQueue(t, ctx, cli, namespace, deploymentName, buildID, taskQueue)
+	drainEvents(t, events)
+
+	// Submit a workflow pinned to this version with no poller present, creating a backlog.
+	run, err := cli.ExecuteWorkflow(ctx,
+		sdkclient.StartWorkflowOptions{
+			TaskQueue: taskQueue,
+			ID:        "poll-invoke-wf-" + uuid.NewString(),
+			VersioningOverride: &sdkclient.PinnedVersioningOverride{
+				Version: worker.WorkerDeploymentVersion{
+					DeploymentName: deploymentName,
+					BuildID:        buildID,
+				},
+			},
+		}, scaleUpWorkflow)
+	require.NoError(t, err)
+
+	// The task add's no-sync-match signal drives the first scale-up invoke.
+	waitForInvoke(t, events, 60*time.Second, "task-add scale-up invoke")
+
+	// No worker comes up and no further tasks are added, so another invoke can
+	// only come from the metrics poll observing the persisting backlog.
+	waitForInvoke(t, events, 60*time.Second, "metrics-poll scale-up invoke")
+
+	// React: bring up a worker to drain the backlog and complete the workflow.
+	w := startVersionedWorker(t, cli, taskQueue, deploymentName, buildID)
+	t.Cleanup(w.Stop)
+
+	var result string
+	getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	require.NoError(t, run.Get(getCtx, &result))
+	require.Equal(t, "foo", result)
+}
+
+// Tasks that sync-match to an already-polling worker must not trigger an invoke.
+// This covers both the case of an existing serverless worker and also a mixed setup
+// with long-lived workers alongside serverless config.
+func testWCINoInvokeWhenWorkerPolling(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID := uuid.NewString()
+	taskQueue := "active-poller-tq-" + deploymentName
+
+	// Observe provider invocations for this build before anything can fire one.
+	spy := &invokeSpy{events: make(chan string, 16)}
+	t.Cleanup(computeprovider.SetComputeObserver(buildID, spy))
+	events := spy.events
+
+	// Create the parent deployment, then a version backed by the no-op
+	// test-invoke provider with the no-sync scaler.
+	createWorkerDeployment(t, env, deploymentName)
+	version := createVersion(t, env, deploymentName, buildID)
+
+	// WCI validates the spec then invokes workers to register task queues: first invoke.
+	waitForInvoke(t, events, 60*time.Second, "register-task-queues invoke")
+
+	// React: bring up a versioned worker and keep it polling for the rest of the test.
+	w := startVersionedWorker(t, cli, taskQueue, deploymentName, buildID)
+	t.Cleanup(w.Stop)
+	require.Eventually(t, func() bool {
+		resp, derr := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+			&workflowservice.DescribeWorkerDeploymentVersionRequest{
+				Namespace:         namespace,
+				DeploymentVersion: version,
+			})
+		return derr == nil &&
+			len(resp.GetWorkerDeploymentVersionInfo().GetTaskQueueInfos()) > 0
+	}, 60*time.Second, 500*time.Millisecond, "task queue never registered against the version")
+	drainEvents(t, events)
+
+	// Each workflow is picked up by the polling worker via sync match.
+	for i := 0; i < 3; i++ {
+		run, err := cli.ExecuteWorkflow(ctx,
+			sdkclient.StartWorkflowOptions{
+				TaskQueue: taskQueue,
+				ID:        "active-poller-wf-" + uuid.NewString(),
+				VersioningOverride: &sdkclient.PinnedVersioningOverride{
+					Version: worker.WorkerDeploymentVersion{
+						DeploymentName: deploymentName,
+						BuildID:        buildID,
+					},
+				},
+			}, scaleUpWorkflow)
+		require.NoError(t, err)
+
+		var result string
+		getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		require.NoError(t, run.Get(getCtx, &result))
+		cancel()
+		require.Equal(t, "foo", result)
+	}
+
+	assertNoInvokes(t, events, 3*time.Second, "while a worker is polling")
 }
 
 // WorkerDeploymentVersion status is initially set to CREATE and then moves to INACTIVE once a worker has polled the
