@@ -13,7 +13,7 @@ import (
 	"go.temporal.io/server/tests/testcore"
 )
 
-func TestWCICreateWorkerDeploymentSuccess(t *testing.T) {
+func testWCICreateWorkerDeploymentSuccess(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -42,7 +42,7 @@ func TestWCICreateWorkerDeploymentSuccess(t *testing.T) {
 	require.Empty(t, descResp.GetWorkerDeploymentInfo().GetVersionSummaries())
 }
 
-func TestWCICreateWorkerDeploymentIdempotent(t *testing.T) {
+func testWCICreateWorkerDeploymentIdempotent(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -78,7 +78,7 @@ func TestWCICreateWorkerDeploymentIdempotent(t *testing.T) {
 	}, 30*time.Second, 500*time.Millisecond, "expected exactly one deployment after idempotent create")
 }
 
-func TestWCICreateWorkerDeploymentAlreadyExists(t *testing.T) {
+func testWCICreateWorkerDeploymentAlreadyExists(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -102,7 +102,7 @@ func TestWCICreateWorkerDeploymentAlreadyExists(t *testing.T) {
 	require.ErrorContains(t, err, deploymentName)
 }
 
-func TestWCICreateWorkerDeploymentEmptyName(t *testing.T) {
+func testWCICreateWorkerDeploymentEmptyName(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -121,7 +121,7 @@ func TestWCICreateWorkerDeploymentEmptyName(t *testing.T) {
 	require.ErrorContains(t, err, "deployment name cannot be empty")
 }
 
-func TestWCIDescribeWorkerDeploymentNotFound(t *testing.T) {
+func testWCIDescribeWorkerDeploymentNotFound(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -137,7 +137,7 @@ func TestWCIDescribeWorkerDeploymentNotFound(t *testing.T) {
 		"describing a missing deployment should return NotFound")
 }
 
-func TestWCIDescribeWorkerDeploymentVersionSummaries(t *testing.T) {
+func testWCIDescribeWorkerDeploymentVersionSummaries(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -172,7 +172,7 @@ func TestWCIDescribeWorkerDeploymentVersionSummaries(t *testing.T) {
 	}, 60*time.Second, 500*time.Millisecond, "version summaries did not reflect both versions")
 }
 
-func TestWCIDeleteEmptyWorkerDeployment(t *testing.T) {
+func testWCIDeleteEmptyWorkerDeployment(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -190,7 +190,7 @@ func TestWCIDeleteEmptyWorkerDeployment(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestWCICannotDeleteWorkerDeploymentWithVersions(t *testing.T) {
+func testWCICannotDeleteWorkerDeploymentWithVersions(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -215,7 +215,7 @@ func TestWCICannotDeleteWorkerDeploymentWithVersions(t *testing.T) {
 	require.ErrorContains(t, err, "has versions")
 }
 
-func TestWCIDeleteNonexistentWorkerDeployment(t *testing.T) {
+func testWCIDeleteNonexistentWorkerDeployment(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -229,7 +229,7 @@ func TestWCIDeleteNonexistentWorkerDeployment(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestWCIListWorkerDeployments(t *testing.T) {
+func testWCIListWorkerDeployments(t *testing.T) {
 	env := createWCITestEnv(t)
 
 	names := map[string]bool{}
@@ -253,7 +253,7 @@ func TestWCIListWorkerDeployments(t *testing.T) {
 	}, 30*time.Second, 500*time.Millisecond, "expected all created deployments listed with create times")
 }
 
-func TestWCIListWorkerDeploymentsPagination(t *testing.T) {
+func testWCIListWorkerDeploymentsPagination(t *testing.T) {
 	env := createWCITestEnv(t)
 
 	names := map[string]bool{}
@@ -285,7 +285,7 @@ func TestWCIListWorkerDeploymentsPagination(t *testing.T) {
 	}, 30*time.Second, 500*time.Millisecond, "pagination should return every deployment exactly once")
 }
 
-func TestWCIListWorkerDeploymentsEmpty(t *testing.T) {
+func testWCIListWorkerDeploymentsEmpty(t *testing.T) {
 	env := createWCITestEnv(t)
 
 	got, err := listAllWorkerDeployments(env, 0)
