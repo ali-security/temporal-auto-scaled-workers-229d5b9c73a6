@@ -4,7 +4,7 @@ golangci-lint = "2.12.2"
 actionlint = "1.7.12"
 shellcheck = "0.11.0" # actionlint shell-lints `run:` blocks only when this is on PATH
 
-# Integration tests live in the ./tests module and require the test_dep build tag
+# Integration tests live under ./tests and require the test_dep build tag
 # (compute-observer spy hooks). Don't set TEMPORAL_ROOT here: suite-scoped clusters
 # (see tests/integration/suite_test.go) load schema/sqlite/v3 from testcore's
 # GetRepoRootDirectory(), which only resolves correctly via its GOMODCACHE fallback

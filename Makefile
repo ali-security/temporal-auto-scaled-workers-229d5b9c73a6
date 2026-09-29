@@ -49,28 +49,16 @@ integration-test:
 test: unit-test integration-test
 
 ##### Linting / formatting #####
-# tests/ is its own Go module (see tests/go.mod), so it needs its own -C invocation:
-# `golangci-lint run ./...` from the repo root never sees files under tests/.
-lint: lint-main lint-tests
-
-lint-main:
+# --build-tags=test_dep is needed so golangci-lint can typecheck tests/integration,
+# which is gated behind that build tag.
+lint:
 	@printf $(COLOR) "Run golangci-lint..."
-	@golangci-lint run $(LINT_DIRS)
-
-lint-tests:
-	@printf $(COLOR) "Run golangci-lint on the tests module..."
-	@golangci-lint run -C tests --build-tags=test_dep $(LINT_DIRS)
+	@golangci-lint run --build-tags=test_dep $(LINT_DIRS)
 
 # Lint only changes introduced since this branch diverged from $(MAIN_BRANCH).
-lint-branch: lint-branch-main lint-branch-tests
-
-lint-branch-main:
+lint-branch:
 	@printf $(COLOR) "Run golangci-lint on changes since merge-base with $(MAIN_BRANCH)..."
-	@golangci-lint run --new-from-rev=$$(git merge-base HEAD $(MAIN_BRANCH)) $(LINT_DIRS)
-
-lint-branch-tests:
-	@printf $(COLOR) "Run golangci-lint on tests module changes since merge-base with $(MAIN_BRANCH)..."
-	@golangci-lint run -C tests --build-tags=test_dep --new-from-rev=$$(git merge-base HEAD $(MAIN_BRANCH)) $(LINT_DIRS)
+	@golangci-lint run --build-tags=test_dep --new-from-rev=$$(git merge-base HEAD $(MAIN_BRANCH)) $(LINT_DIRS)
 
 fmt:
 	@printf $(COLOR) "Format with golangci-lint..."
@@ -82,7 +70,7 @@ fmt-branch:
 	@files=$$(git diff --name-only --diff-filter=d $$(git merge-base HEAD $(MAIN_BRANCH)) -- '*.go'); \
 	if [ -n "$$files" ]; then golangci-lint fmt $$files; else printf $(COLOR) "No changed Go files."; fi
 
-.PHONY: lint lint-main lint-tests lint-branch lint-branch-main lint-branch-tests fmt fmt-branch
+.PHONY: lint lint-branch fmt fmt-branch
 
 ##### Run server #####
 start: start-sqlite-file
