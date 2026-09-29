@@ -79,7 +79,7 @@ func TestGCPCloudRun_ImpersonationMatrix(t *testing.T) {
 
 			p := &gcpCloudRunComputeProvider{firstDelegateAsBase: tc.asBase}
 			// Return values discarded: we assert only on the captured impersonation calls.
-			_, _, _ = p.buildClientAndParams(t.Context(), RequestContext{NamespaceName: "myns.acct"}, ComputeProviderConfig{
+			_, _, _, _ = p.buildClientAndParams(t.Context(), RequestContext{NamespaceName: "myns.acct"}, ComputeProviderConfig{
 				configGCPCloudRunProject:        "p",
 				configGCPCloudRunRegion:         "r",
 				configGCPCloudRunWorkerPool:     "wp",
@@ -147,7 +147,7 @@ func TestGCPCloudRun_ChainProviderReceivesNamespaceAndFlattenedCandidates(t *tes
 	// Discard the final return — we only care the chain provider was invoked with
 	// the expected input. The downstream Cloud Run client construction may or may
 	// not succeed depending on the test env's GCP auth state.
-	_, _, _ = p.buildClientAndParams(t.Context(), RequestContext{NamespaceName: "my-ns"}, ComputeProviderConfig{
+	_, _, _, _ = p.buildClientAndParams(t.Context(), RequestContext{NamespaceName: "my-ns"}, ComputeProviderConfig{
 		configGCPCloudRunProject:        "p",
 		configGCPCloudRunRegion:         "r",
 		configGCPCloudRunWorkerPool:     "wp",
@@ -160,7 +160,7 @@ func TestGCPCloudRun_ChainProviderReceivesNamespaceAndFlattenedCandidates(t *tes
 func TestGCPCloudRun_ChainProviderErrorWrapped(t *testing.T) {
 	setChainProviderForTest(t, &captureChainProvider{err: errors.New("boom")})
 	p := &gcpCloudRunComputeProvider{}
-	_, _, err := p.buildClientAndParams(t.Context(), RequestContext{NamespaceName: "my-ns"}, ComputeProviderConfig{
+	_, _, _, err := p.buildClientAndParams(t.Context(), RequestContext{NamespaceName: "my-ns"}, ComputeProviderConfig{
 		configGCPCloudRunProject:        "p",
 		configGCPCloudRunRegion:         "r",
 		configGCPCloudRunWorkerPool:     "wp",
@@ -178,7 +178,7 @@ func TestGCPCloudRun_ChainProviderNotCalledWithoutCustomerSA(t *testing.T) {
 		return nil, nil
 	}))
 	p := &gcpCloudRunComputeProvider{}
-	_, _, _ = p.buildClientAndParams(t.Context(), RequestContext{NamespaceName: "my-ns"}, ComputeProviderConfig{
+	_, _, _, _ = p.buildClientAndParams(t.Context(), RequestContext{NamespaceName: "my-ns"}, ComputeProviderConfig{
 		configGCPCloudRunProject:    "p",
 		configGCPCloudRunRegion:     "r",
 		configGCPCloudRunWorkerPool: "wp",

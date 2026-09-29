@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -37,19 +38,6 @@ func TestClassifyGCPFailure(t *testing.T) {
 
 		// A rejected token is worker-controller's own credential problem.
 		{"unauthenticated", status.Error(codes.Unauthenticated, "bad token"), FailureInternal},
-		{"creds fetch 401", status.Error(codes.Unauthenticated, credsFetchErr(401)), FailureInternal},
-		{"creds fetch 403", status.Error(codes.Unauthenticated, credsFetchErr(403)), FailureInternal},
-
-		// ...but a token endpoint that was down or throttling us is not.
-		{"creds fetch 503", status.Error(codes.Unauthenticated, credsFetchErr(503)), FailureUnavailable},
-		{"creds fetch 500", status.Error(codes.Unauthenticated, credsFetchErr(500)), FailureUnavailable},
-		{"creds fetch 429", status.Error(codes.Unauthenticated, credsFetchErr(429)), FailureThrottled},
-		{"creds fetch oauth2 503", status.Error(codes.Unauthenticated,
-			"transport: per-RPC creds failed due to error: oauth2: cannot fetch token: 503 Service Unavailable"), FailureUnavailable},
-
-		// A 503 in the RPC's own body must not be mistaken for a creds-fetch status.
-		{"unauthenticated body mentions 503", status.Error(codes.Unauthenticated,
-			`token rejected: {"code": 503}`), FailureInternal},
 
 		// Customer-owned client faults, narrowed by code.
 		{"not found", status.Error(codes.NotFound, "no pool"), FailureNotFound},
@@ -69,8 +57,6 @@ func TestClassifyGCPFailure(t *testing.T) {
 
 		// Classification must survive the wrapping the provider applies.
 		{"wrapped", fmt.Errorf("failed to update worker pool %q: %w", "wp", status.Error(codes.Unavailable, "x")), FailureUnavailable},
-		{"wrapped creds fetch 503", fmt.Errorf("failed to update worker pool %q: %w", "wp",
-			status.Error(codes.Unauthenticated, credsFetchErr(503))), FailureUnavailable},
 	}
 
 	for _, tc := range cases {
@@ -113,9 +99,61 @@ func TestGCPCloudRunUpdateWorkerSetSize_ClassifiesMissingConfigAsRejected(t *tes
 	assert.Equal(t, FailureRejected, pErr.Class)
 }
 
-// credsFetchErr reproduces how grpc-go surfaces an impersonation failure: the
-// token endpoint's HTTP status survives only in the status message.
-func credsFetchErr(code int) string {
-	return fmt.Sprintf("transport: per-RPC creds failed due to error: impersonate: status code %d: "+
-		`{"error": {"code": %d, "message": "Unable to extract the resource from the request.", "status": "UNAVAILABLE"}}`, code, code)
+func TestClassifyTokenFetchFailure(t *testing.T) {
+	// The real message, as google.golang.org/api/impersonate renders it.
+	impersonateErr := func(code int) error {
+		return fmt.Errorf("impersonate: status code %d: "+
+			`{"error": {"code": %d, "message": "Unable to extract the resource from the request.", "status": "UNAVAILABLE"}}`, code, code)
+	}
+
+	cases := []struct {
+		name string
+		err  error
+		want FailureClass
+	}{
+		// The token endpoint was down or throttling: not our credential problem.
+		{"503", impersonateErr(503), FailureUnavailable},
+		{"500", impersonateErr(500), FailureUnavailable},
+		{"429", impersonateErr(429), FailureThrottled},
+
+		// A genuinely rejected or misconfigured chain stays ours.
+		{"401", impersonateErr(401), FailureInternal},
+		{"403", impersonateErr(403), FailureInternal},
+		{"400", impersonateErr(400), FailureInternal},
+		{"no status in message", errors.New("impersonate: unable to create request: bad url"), FailureInternal},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, classifyTokenFetchFailure(tc.err))
+		})
+	}
+}
+
+// A recorded token failure must win over the opaque Unauthenticated status grpc
+// reports for it; without the recorder a 503 outage looks like our own bad creds.
+func TestClassifyCallFailure_PrefersRecordedTokenError(t *testing.T) {
+	grpcErr := status.Error(codes.Unauthenticated,
+		"transport: per-RPC creds failed due to error: impersonate: status code 503: unavailable")
+
+	assert.Equal(t, FailureInternal, classifyCallFailure(nil, grpcErr),
+		"no recorder: falls back to the gRPC status")
+
+	rec := &tokenErrorRecorder{inner: errTokenSource{errors.New("impersonate: status code 503: unavailable")}}
+	_, _ = rec.Token()
+	assert.Equal(t, FailureUnavailable, classifyCallFailure(rec, grpcErr))
+
+	// A recorder that never failed must not shadow a real RPC error.
+	clean := &tokenErrorRecorder{inner: errTokenSource{}}
+	_, _ = clean.Token()
+	assert.Equal(t, FailureNotFound, classifyCallFailure(clean, status.Error(codes.NotFound, "no pool")))
+}
+
+type errTokenSource struct{ err error }
+
+func (e errTokenSource) Token() (*oauth2.Token, error) {
+	if e.err != nil {
+		return nil, e.err
+	}
+	return &oauth2.Token{AccessToken: "t"}, nil
 }

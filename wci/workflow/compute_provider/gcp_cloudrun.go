@@ -64,7 +64,7 @@ func (p *gcpCloudRunComputeProvider) LaunchStrategy() LaunchStrategy {
 }
 
 func (p *gcpCloudRunComputeProvider) ValidateConfig(ctx context.Context, rc RequestContext, config ComputeProviderConfig) error {
-	client, name, err := p.buildClientAndParams(ctx, rc, config)
+	client, name, _, err := p.buildClientAndParams(ctx, rc, config)
 	if err != nil {
 		return err
 	}
@@ -81,16 +81,52 @@ func (p *gcpCloudRunComputeProvider) InvokeWorker(_ context.Context, _ RequestCo
 }
 
 func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, rc RequestContext, config ComputeProviderConfig, count int32) error {
-	client, name, err := p.buildClientAndParams(ctx, rc, config)
+	client, name, tokens, err := p.buildClientAndParams(ctx, rc, config)
 	if err != nil {
 		return NewProviderError(classifyGCPFailure(err), err)
 	}
 	defer func() { _ = client.Close() }()
 
 	if _, err = client.UpdateWorkerPool(ctx, buildUpdateWorkerPoolRequest(name, count)); err != nil {
-		return NewProviderError(classifyGCPFailure(err), fmt.Errorf("failed to update worker pool %q: %w", name, err))
+		return NewProviderError(classifyCallFailure(tokens, err), fmt.Errorf("failed to update worker pool %q: %w", name, err))
 	}
 	return nil
+}
+
+// classifyCallFailure prefers the recorded token-minting error over the RPC's own
+// status: grpc collapses any credential failure into an opaque Unauthenticated,
+// losing whether the token endpoint was down or the token was actually rejected.
+func classifyCallFailure(tokens *tokenErrorRecorder, err error) FailureClass {
+	if tokenErr := tokens.lastErr(); tokenErr != nil {
+		return classifyTokenFetchFailure(tokenErr)
+	}
+	return classifyGCPFailure(err)
+}
+
+// tokenErrorRecorder wraps a TokenSource to retain the last minting failure,
+// which is otherwise unreachable: grpc formats the cause with %v, not %w.
+type tokenErrorRecorder struct {
+	inner oauth2.TokenSource
+	mu    sync.Mutex
+	err   error
+}
+
+func (t *tokenErrorRecorder) Token() (*oauth2.Token, error) {
+	tok, err := t.inner.Token()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.err = err
+	return tok, err
+}
+
+// lastErr is nil-safe: no impersonation configured means no token errors.
+func (t *tokenErrorRecorder) lastErr() error {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.err
 }
 
 // scalingInstanceCountMaskPath is the update-mask path for WorkerPoolScaling.manual_instance_count.
@@ -112,13 +148,14 @@ func buildUpdateWorkerPoolRequest(name string, count int32) *runpb.UpdateWorkerP
 }
 
 // buildClientAndParams creates a Cloud Run WorkerPoolsClient and constructs the fully-qualified worker pool name.
-func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, rc RequestContext, config ComputeProviderConfig) (*run.WorkerPoolsClient, string, error) {
+func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, rc RequestContext, config ComputeProviderConfig) (*run.WorkerPoolsClient, string, *tokenErrorRecorder, error) {
 	name, err := getNameFromConfig(config)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	var opts []option.ClientOption
+	var tokens *tokenErrorRecorder
 	if serviceAccount, ok := config[configGCPCloudRunServiceAccount].(string); ok && serviceAccount != "" {
 		candidates := make([][]string, 0, len(p.intermediaryServiceAccounts))
 		for _, step := range p.intermediaryServiceAccounts {
@@ -134,7 +171,7 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, r
 			GlobalSACandidates: candidates,
 		})
 		if err != nil {
-			return nil, "", fmt.Errorf("%w: failed to resolve impersonation chain: %w", errWCIOwned, err)
+			return nil, "", nil, fmt.Errorf("%w: failed to resolve impersonation chain: %w", errWCIOwned, err)
 		}
 
 		scopes := []string{"https://www.googleapis.com/auth/cloud-platform"}
@@ -155,7 +192,7 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, r
 				Scopes:          scopes,
 			})
 			if err != nil {
-				return nil, "", fmt.Errorf("%w: failed to impersonate global service account %q: %w", errWCIOwned, chainDelegates[0], err)
+				return nil, "", nil, fmt.Errorf("%w: failed to impersonate global service account %q: %w", errWCIOwned, chainDelegates[0], err)
 			}
 			baseOpts = []option.ClientOption{option.WithTokenSource(baseTS)}
 			chainDelegates = chainDelegates[1:]
@@ -167,16 +204,17 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, r
 			Delegates:       chainDelegates,
 		}, baseOpts...)
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to create impersonated credentials for %q: %w", serviceAccount, err)
+			return nil, "", nil, fmt.Errorf("failed to create impersonated credentials for %q: %w", serviceAccount, err)
 		}
-		opts = []option.ClientOption{option.WithTokenSource(ts)}
+		tokens = &tokenErrorRecorder{inner: ts}
+		opts = []option.ClientOption{option.WithTokenSource(tokens)}
 	}
 
 	client, err := run.NewWorkerPoolsClient(ctx, opts...)
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: failed to create Cloud Run client: %w", errWCIOwned, err)
+		return nil, "", nil, fmt.Errorf("%w: failed to create Cloud Run client: %w", errWCIOwned, err)
 	}
-	return client, name, nil
+	return client, name, tokens, nil
 }
 
 func getNameFromConfig(config ComputeProviderConfig) (string, error) {
