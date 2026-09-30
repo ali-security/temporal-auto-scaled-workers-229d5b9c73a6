@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -17,8 +18,8 @@ import (
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
-	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
+	wciworkflow "go.temporal.io/auto-scaled-workers/wci/workflow"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	sdkclient "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -56,7 +57,9 @@ func testWCIInstanceLifecycle(t *testing.T) {
 				Namespace:         namespace,
 				DeploymentVersion: version,
 			})
-	require.Error(t, err)
+	var notFound *serviceerror.NotFound
+	require.ErrorAs(t, err, &notFound,
+		"describing a missing version should return NotFound, got: %v", err)
 
 	// Create with a test compute config (no external service calls).
 	cc := testComputeConfig()
@@ -127,15 +130,7 @@ func testWCIInstanceLifecycle(t *testing.T) {
 				Identity:          "test-identity",
 			})
 	require.NoError(t, err)
-
-	// Version should no longer exist.
-	_, err = cli.WorkflowService().
-		DescribeWorkerDeploymentVersion(ctx,
-			&workflowservice.DescribeWorkerDeploymentVersionRequest{
-				Namespace:         namespace,
-				DeploymentVersion: version,
-			})
-	require.Error(t, err)
+	requireVersionDeleted(t, env, version)
 }
 
 func testWCIDuplicateDeploymentVersionAlreadyExists(t *testing.T) {
@@ -189,6 +184,83 @@ func testWCIDuplicateDeploymentVersionAlreadyExists(t *testing.T) {
 		"duplicate version create should return an AlreadyExists error, got: %v", err)
 }
 
+func testWCICreateDeploymentVersionIdempotent(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	createWorkerDeployment(t, env, deploymentName)
+
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        uuid.NewString(),
+	}
+	req := &workflowservice.CreateWorkerDeploymentVersionRequest{
+		Namespace:         namespace,
+		DeploymentVersion: version,
+		Identity:          "test-identity",
+		ComputeConfig:     testComputeConfig(),
+		RequestId:         uuid.NewString(),
+	}
+
+	_, err := cli.WorkflowService().CreateWorkerDeploymentVersion(ctx, req)
+	require.NoError(t, err)
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx, req)
+	require.NoError(t, err, "repeating a create with the same request_id should succeed")
+
+	// Wait for the version to be visible, then check it was only created once.
+	require.Eventually(t, func() bool {
+		resp, derr := cli.WorkflowService().DescribeWorkerDeployment(ctx,
+			&workflowservice.DescribeWorkerDeploymentRequest{
+				Namespace:      namespace,
+				DeploymentName: deploymentName,
+			})
+		if derr != nil {
+			return false
+		}
+		summaries := resp.GetWorkerDeploymentInfo().GetVersionSummaries()
+		return len(summaries) == 1 &&
+			summaries[0].GetDeploymentVersion().GetBuildId() == version.GetBuildId()
+	}, 60*time.Second, 500*time.Millisecond, "expected exactly one version after idempotent create")
+}
+
+func testWCICreateDeploymentVersionDeploymentNotFound(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        uuid.NewString(),
+	}
+
+	_, err := cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     testComputeConfig(),
+			RequestId:         uuid.NewString(),
+		})
+	require.Error(t, err)
+	var notFound *serviceerror.NotFound
+	require.ErrorAs(t, err, &notFound,
+		"creating a version under a missing deployment should return NotFound, got: %v", err)
+
+	// The rejected create must not have implicitly created the deployment.
+	_, err = cli.WorkflowService().DescribeWorkerDeployment(ctx,
+		&workflowservice.DescribeWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+		})
+	require.ErrorAs(t, err, &notFound,
+		"deployment should not exist after a rejected version create, got: %v", err)
+}
+
 func testWCIDescribeVersionReturnsCorrectComputeConfig(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
@@ -212,6 +284,7 @@ func testWCIDescribeVersionReturnsCorrectComputeConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	cc := testComputeConfig()
+	cc.ScalingGroups["default"].TaskQueueTypes = []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW}
 	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
 		&workflowservice.CreateWorkerDeploymentVersionRequest{
 			Namespace:         namespace,
@@ -281,7 +354,7 @@ func testWCICreateVersionInvalidComputeConfig(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestWCIInvokeIncompatibleWithRateBased verifies the rate-based algorithm
+// testWCIInvokeIncompatibleWithRateBased verifies the rate-based algorithm
 // (worker-set launch strategy) cannot be paired with the invoke test provider.
 func testWCIInvokeIncompatibleWithRateBased(t *testing.T) {
 	env := createWCITestEnv(t)
@@ -468,6 +541,59 @@ func testWCIUpdateAndRemoveVersionComputeConfig(t *testing.T) {
 		"default scaling group should have been removed from the compute config")
 }
 
+func testWCIUpdateVersionComputeConfigNoChange(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        uuid.NewString(),
+	}
+	createWorkerDeployment(t, env, deploymentName)
+
+	cc := validUpdatedComputeConfig()
+	_, err := cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     cc,
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	// Re-send the scaler details the version already has.
+	_, err = cli.WorkflowService().UpdateWorkerDeploymentVersionComputeConfig(ctx,
+		&workflowservice.UpdateWorkerDeploymentVersionComputeConfigRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			RequestId:         uuid.NewString(),
+			ComputeConfigScalingGroups: map[string]*computepb.ComputeConfigScalingGroupUpdate{
+				"default": {
+					ScalingGroup: validUpdatedComputeConfig().GetScalingGroups()["default"],
+					UpdateMask: &fieldmaskpb.FieldMask{
+						Paths: []string{"scaler.details"},
+					},
+				},
+			},
+		})
+	require.NoError(t, err)
+
+	descResp, err := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+		&workflowservice.DescribeWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+		})
+	require.NoError(t, err)
+	got := descResp.GetWorkerDeploymentVersionInfo().GetComputeConfig()
+	require.True(t, proto.Equal(cc, got),
+		"a no-op update should leave the compute config unchanged:\nwant: %v\ngot:  %v", cc, got)
+}
+
 // scaleUpWorkflow is a trivial workflow whose only purpose is to create a
 // backlog on a versioned task queue and then complete once a worker comes up.
 func scaleUpWorkflow(_ workflow.Context) (string, error) {
@@ -562,6 +688,213 @@ func testWCIScaleUp(t *testing.T) {
 	require.Equal(t, "foo", result)
 }
 
+// A version keeps scaling up on backlog after a valid compute config update.
+func testWCIScaleUpAfterComputeConfigUpdate(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID := uuid.NewString()
+	taskQueue := "update-scaleup-tq-" + deploymentName
+
+	// Observe provider invocations for this build before anything can fire one.
+	spy := &invokeSpy{events: make(chan string, 16)}
+	t.Cleanup(computeprovider.SetComputeObserver(buildID, spy))
+	events := spy.events
+
+	// Create the parent deployment, then a version backed by the no-op
+	// test-invoke provider with the no-sync scaler.
+	createWorkerDeployment(t, env, deploymentName)
+	version := createVersion(t, env, deploymentName, buildID)
+
+	// WCI validates the spec then invokes workers to register task queues: first invoke.
+	waitForInvoke(t, events, 60*time.Second, "register-task-queues invoke")
+
+	// React: briefly bring up a versioned worker so the task queue registers
+	// against this version, then drop it so a backlog can form.
+	registerVersionTaskQueue(t, ctx, cli, namespace, deploymentName, buildID, taskQueue)
+
+	// Update the default scaling group's scaler details with a valid no-sync config.
+	_, err := cli.WorkflowService().UpdateWorkerDeploymentVersionComputeConfig(ctx,
+		&workflowservice.UpdateWorkerDeploymentVersionComputeConfigRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			RequestId:         uuid.NewString(),
+			ComputeConfigScalingGroups: map[string]*computepb.ComputeConfigScalingGroupUpdate{
+				"default": {
+					ScalingGroup: validUpdatedComputeConfig().GetScalingGroups()["default"],
+					UpdateMask: &fieldmaskpb.FieldMask{
+						Paths: []string{"scaler.details"},
+					},
+				},
+			},
+		})
+	require.NoError(t, err)
+	// Any registration invoke from the update completes before the update returns.
+	drainEvents(t, events)
+
+	// Submit a workflow pinned to this version with no poller present, creating a backlog.
+	run, err := cli.ExecuteWorkflow(ctx,
+		sdkclient.StartWorkflowOptions{
+			TaskQueue: taskQueue,
+			ID:        "update-scaleup-wf-" + uuid.NewString(),
+			VersioningOverride: &sdkclient.PinnedVersioningOverride{
+				Version: worker.WorkerDeploymentVersion{
+					DeploymentName: deploymentName,
+					BuildID:        buildID,
+				},
+			},
+		}, scaleUpWorkflow)
+	require.NoError(t, err)
+
+	// The backlog with no poller should still drive WCI to invoke a worker under the updated config.
+	waitForInvoke(t, events, 60*time.Second, "scale-up invoke after update")
+
+	// React: bring up a worker to drain the backlog and complete the workflow.
+	w2 := startVersionedWorker(t, cli, taskQueue, deploymentName, buildID)
+	t.Cleanup(w2.Stop)
+
+	var result string
+	getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	require.NoError(t, run.Get(getCtx, &result))
+	require.Equal(t, "foo", result)
+}
+
+// The periodic metrics poll keeps invoking workers while a backlog persists,
+// independently of task-add signals.
+func testWCIMetricsPollInvokesOnBacklog(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID := uuid.NewString()
+	taskQueue := "poll-invoke-tq-" + deploymentName
+
+	// Observe provider invocations for this build before anything can fire one.
+	spy := &invokeSpy{events: make(chan string, 16)}
+	t.Cleanup(computeprovider.SetComputeObserver(buildID, spy))
+	events := spy.events
+
+	// Poll on a fast cadence so the poll-driven invoke fires within the test's
+	// deadline instead of the production 5m/30s intervals.
+	t.Cleanup(wciworkflow.SetPollIntervalsForTest(2*time.Second, 1*time.Second))
+
+	// Create the parent deployment, then a version backed by the no-op
+	// test-invoke provider with the no-sync scaler.
+	createWorkerDeployment(t, env, deploymentName)
+	createVersion(t, env, deploymentName, buildID)
+
+	// WCI validates the spec then invokes workers to register task queues: first invoke.
+	waitForInvoke(t, events, 60*time.Second, "register-task-queues invoke")
+
+	// React: briefly bring up a versioned worker so the task queue registers
+	// against this version, then drop it so a backlog can form.
+	registerVersionTaskQueue(t, ctx, cli, namespace, deploymentName, buildID, taskQueue)
+	drainEvents(t, events)
+
+	// Submit a workflow pinned to this version with no poller present, creating a backlog.
+	run, err := cli.ExecuteWorkflow(ctx,
+		sdkclient.StartWorkflowOptions{
+			TaskQueue: taskQueue,
+			ID:        "poll-invoke-wf-" + uuid.NewString(),
+			VersioningOverride: &sdkclient.PinnedVersioningOverride{
+				Version: worker.WorkerDeploymentVersion{
+					DeploymentName: deploymentName,
+					BuildID:        buildID,
+				},
+			},
+		}, scaleUpWorkflow)
+	require.NoError(t, err)
+
+	// The task add's no-sync-match signal drives the first scale-up invoke.
+	waitForInvoke(t, events, 60*time.Second, "task-add scale-up invoke")
+
+	// No worker comes up and no further tasks are added, so another invoke can
+	// only come from the metrics poll observing the persisting backlog.
+	waitForInvoke(t, events, 60*time.Second, "metrics-poll scale-up invoke")
+
+	// React: bring up a worker to drain the backlog and complete the workflow.
+	w := startVersionedWorker(t, cli, taskQueue, deploymentName, buildID)
+	t.Cleanup(w.Stop)
+
+	var result string
+	getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	require.NoError(t, run.Get(getCtx, &result))
+	require.Equal(t, "foo", result)
+}
+
+// Tasks that sync-match to an already-polling worker must not trigger an invoke.
+// This covers both the case of an existing serverless worker and also a mixed setup
+// with long-lived workers alongside serverless config.
+func testWCINoInvokeWhenWorkerPolling(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID := uuid.NewString()
+	taskQueue := "active-poller-tq-" + deploymentName
+
+	// Observe provider invocations for this build before anything can fire one.
+	spy := &invokeSpy{events: make(chan string, 16)}
+	t.Cleanup(computeprovider.SetComputeObserver(buildID, spy))
+	events := spy.events
+
+	// Create the parent deployment, then a version backed by the no-op
+	// test-invoke provider with the no-sync scaler.
+	createWorkerDeployment(t, env, deploymentName)
+	version := createVersion(t, env, deploymentName, buildID)
+
+	// WCI validates the spec then invokes workers to register task queues: first invoke.
+	waitForInvoke(t, events, 60*time.Second, "register-task-queues invoke")
+
+	// React: bring up a versioned worker and keep it polling for the rest of the test.
+	w := startVersionedWorker(t, cli, taskQueue, deploymentName, buildID)
+	t.Cleanup(w.Stop)
+	require.Eventually(t, func() bool {
+		resp, derr := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+			&workflowservice.DescribeWorkerDeploymentVersionRequest{
+				Namespace:         namespace,
+				DeploymentVersion: version,
+			})
+		return derr == nil &&
+			len(resp.GetWorkerDeploymentVersionInfo().GetTaskQueueInfos()) > 0
+	}, 60*time.Second, 500*time.Millisecond, "task queue never registered against the version")
+	drainEvents(t, events)
+
+	// Each workflow is picked up by the polling worker via sync match.
+	for i := 0; i < 3; i++ {
+		run, err := cli.ExecuteWorkflow(ctx,
+			sdkclient.StartWorkflowOptions{
+				TaskQueue: taskQueue,
+				ID:        "active-poller-wf-" + uuid.NewString(),
+				VersioningOverride: &sdkclient.PinnedVersioningOverride{
+					Version: worker.WorkerDeploymentVersion{
+						DeploymentName: deploymentName,
+						BuildID:        buildID,
+					},
+				},
+			}, scaleUpWorkflow)
+		require.NoError(t, err)
+
+		var result string
+		getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		require.NoError(t, run.Get(getCtx, &result))
+		cancel()
+		require.Equal(t, "foo", result)
+	}
+
+	assertNoInvokes(t, events, 3*time.Second, "while a worker is polling")
+}
+
 // WorkerDeploymentVersion status is initially set to CREATE and then moves to INACTIVE once a worker has polled the
 // task queue. For server scaled workers, this requires WCI to trigger a compute scale-up (invoke call here), in order for a
 // worker to start. This test asserts that the version moves to inactive after initial poll from worker which is
@@ -617,6 +950,8 @@ func testWCIVersionInactiveAfterInvoke(t *testing.T) {
 	require.Equal(t, enumspb.WORKER_DEPLOYMENT_VERSION_STATUS_CREATED,
 		descResp.GetWorkerDeploymentVersionInfo().GetStatus(),
 		"version should have status CREATED before any task queue is registered")
+	require.NotNil(t, descResp.GetWorkerDeploymentVersionInfo().GetCreateTime())
+	require.Equal(t, "test-identity", descResp.GetWorkerDeploymentVersionInfo().GetLastModifierIdentity())
 
 	// WCI validates the spec then invokes workers to register task queues.
 	waitForInvoke(t, events, 60*time.Second, "register-task-queues invoke")
@@ -705,7 +1040,7 @@ func testWCIMultipleVersionsInvokeWithPinnedWorkflows(t *testing.T) {
 			len(resp.GetWorkerDeploymentVersionInfo().GetTaskQueueInfos()) > 0
 	}, 60*time.Second, 500*time.Millisecond, "task queue never registered against the version")
 
-	drainEvents(t, events1)
+	assertNoInvokes(t, events1, 2*time.Second, "after v1 registration")
 	w1.Stop()
 
 	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
@@ -731,7 +1066,9 @@ func testWCIMultipleVersionsInvokeWithPinnedWorkflows(t *testing.T) {
 			len(resp.GetWorkerDeploymentVersionInfo().GetTaskQueueInfos()) > 0
 	}, 60*time.Second, 500*time.Millisecond, "task queue never registered against the version")
 
-	drainEvents(t, events2)
+	// Creating v2 must invoke only v2, exactly once.
+	assertNoInvokes(t, events2, 2*time.Second, "after v2 registration")
+	assertNoInvokes(t, events1, 100*time.Millisecond, "after v2 registration")
 	w2.Stop()
 
 	// Submit a workflow pinned to version 1 and assert only version 1 receives events
@@ -1024,6 +1361,47 @@ func testWCISetCurrentVersionMissingTaskQueuesAndOverride(t *testing.T) {
 		"version B should have been promoted to current after the override")
 }
 
+// allow_no_pollers lets a build the deployment has never seen (not created and
+// never polled) be promoted to current.
+// NOTE: possibly a server bug: despite the flag's name, the server only checks that the version exists, so a
+// created-but-never-polled version can be promoted without the flag.
+func testWCISetCurrentVersionAllowNoPollers(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID := uuid.NewString()
+	createWorkerDeployment(t, env, deploymentName)
+
+	req := &workflowservice.SetWorkerDeploymentCurrentVersionRequest{
+		Namespace:               namespace,
+		DeploymentName:          deploymentName,
+		BuildId:                 buildID,
+		Identity:                "test-identity",
+		IgnoreMissingTaskQueues: true,
+	}
+	_, err := cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx, req)
+	var notFound *serviceerror.NotFound
+	require.ErrorAs(t, err, &notFound,
+		"promoting an unknown version without allow_no_pollers should return NotFound, got: %v", err)
+
+	req.AllowNoPollers = true
+	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx, req)
+	require.NoError(t, err)
+
+	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
+		&workflowservice.DescribeWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+		})
+	require.NoError(t, err)
+	current := descResp.GetWorkerDeploymentInfo().GetRoutingConfig().GetCurrentDeploymentVersion()
+	require.NotNil(t, current, "expected a current deployment version to be set")
+	require.Equal(t, buildID, current.GetBuildId())
+}
+
 // SetWorkerDeploymentCurrentVersion rejects a mutation carrying a stale conflict
 // token: capture a token, advance the routing revision with a successful
 // SetCurrent, then replay the stale token and expect a FailedPrecondition.
@@ -1179,6 +1557,52 @@ func testWCISetRampingVersionClear(t *testing.T) {
 		return info.GetStatus() == enumspb.WORKER_DEPLOYMENT_VERSION_STATUS_DRAINED &&
 			info.GetDrainageInfo().GetStatus() == enumspb.VERSION_DRAINAGE_STATUS_DRAINED
 	}, 30*time.Second, 500*time.Millisecond, "version never reached DRAINED")
+}
+
+// A nil ramping version means unversioned workers, so an empty build_id with a
+// non-zero percentage ramps that share of traffic to unversioned rather than
+// clearing the ramp. The previously ramping version still drains.
+func testWCISetRampingVersionToUnversioned(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName, _, versionB := setupCurrentPlusSecondVersion(t, env)
+
+	for _, buildID := range []string{versionB.GetBuildId(), ""} {
+		_, err := cli.WorkflowService().SetWorkerDeploymentRampingVersion(ctx,
+			&workflowservice.SetWorkerDeploymentRampingVersionRequest{
+				Namespace:      namespace,
+				DeploymentName: deploymentName,
+				BuildId:        buildID,
+				Percentage:     20.0,
+				Identity:       "test-identity",
+			})
+		require.NoError(t, err)
+	}
+
+	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
+		&workflowservice.DescribeWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+		})
+	require.NoError(t, err)
+	rc := descResp.GetWorkerDeploymentInfo().GetRoutingConfig()
+	require.Nil(t, rc.GetRampingDeploymentVersion(),
+		"ramping deployment version should be unversioned")
+	require.InEpsilon(t, float32(20.0), rc.GetRampingVersionPercentage(), 0.0,
+		"ramp percentage to unversioned should be kept")
+
+	require.Eventually(t, func() bool {
+		verResp, derr := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+			&workflowservice.DescribeWorkerDeploymentVersionRequest{
+				Namespace:         namespace,
+				DeploymentVersion: versionB,
+			})
+		return derr == nil &&
+			verResp.GetWorkerDeploymentVersionInfo().GetStatus() == enumspb.WORKER_DEPLOYMENT_VERSION_STATUS_DRAINED
+	}, 30*time.Second, 500*time.Millisecond, "previously ramping version never reached DRAINED")
 }
 
 // SetWorkerDeploymentRampingVersion rejects setting the ramping version to the
@@ -1916,6 +2340,97 @@ func testWCICanDeleteDrainingVersionWithOverride(t *testing.T) {
 			SkipDrainage:      true,
 		})
 	require.NoError(t, err)
+	requireVersionDeleted(t, env, version1)
+}
+
+// A drained version that is neither current nor ramping can be deleted without
+// skip_drainage.
+func testWCIDeleteDrainedVersion(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID1 := uuid.NewString()
+	buildID2 := uuid.NewString()
+
+	_, err := cli.WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	// Create version 1 without poller
+	version1 := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        buildID1,
+	}
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version1,
+			Identity:          "test-identity",
+			ComputeConfig:     testComputeConfig(),
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
+		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
+			Namespace:               namespace,
+			DeploymentName:          deploymentName,
+			BuildId:                 buildID1,
+			IgnoreMissingTaskQueues: false,
+			Identity:                "test-identity",
+		})
+	require.NoError(t, err)
+
+	// Create v2 and set current, which starts draining v1.
+	version2 := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        buildID2,
+	}
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version2,
+			Identity:          "test-identity",
+			ComputeConfig:     testComputeConfig(),
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
+		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
+			Namespace:               namespace,
+			DeploymentName:          deploymentName,
+			BuildId:                 buildID2,
+			IgnoreMissingTaskQueues: true,
+			Identity:                "test-identity",
+		})
+	require.NoError(t, err)
+
+	// With no pinned workflows, v1 moves through DRAINING to DRAINED.
+	require.Eventually(t, func() bool {
+		resp, derr := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+			&workflowservice.DescribeWorkerDeploymentVersionRequest{
+				Namespace:         namespace,
+				DeploymentVersion: version1,
+			})
+		return derr == nil &&
+			resp.GetWorkerDeploymentVersionInfo().GetStatus() == enumspb.WORKER_DEPLOYMENT_VERSION_STATUS_DRAINED
+	}, 30*time.Second, 500*time.Millisecond, "version1 never reached DRAINED")
+
+	_, err = cli.WorkflowService().DeleteWorkerDeploymentVersion(ctx,
+		&workflowservice.DeleteWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version1,
+			Identity:          "test-identity",
+		})
+	require.NoError(t, err)
+	requireVersionDeleted(t, env, version1)
 }
 
 func testWCIDescribeVersionReportsTaskQueueStats(t *testing.T) {
@@ -1967,6 +2482,9 @@ func testWCIDescribeVersionReportsTaskQueueStats(t *testing.T) {
 		require.Nil(t, vtq.GetStats(),
 			"stats must not be reported for %s/%s when report_task_queue_stats is false",
 			vtq.GetName(), vtq.GetType())
+		require.Empty(t, vtq.GetStatsByPriorityKey(),
+			"per-priority stats must not be reported for %s/%s when report_task_queue_stats is false",
+			vtq.GetName(), vtq.GetType())
 	}
 
 	// Stop the worker and submit workflows with no poller present to build a backlog.
@@ -1988,26 +2506,29 @@ func testWCIDescribeVersionReportsTaskQueueStats(t *testing.T) {
 
 	// With `ReportTaskQueueStats: true`, the workflow task queue reports a backlog and rate
 	require.Eventually(t, func() bool {
-		stats := describeWorkflowTaskQueueStats(ctx, cli, namespace, version, taskQueue)
+		vtq := describeWorkflowTaskQueue(ctx, cli, namespace, version, taskQueue)
+		stats := vtq.GetStats()
+		// The workflows use the default priority, so that key's stats should carry the backlog.
 		return stats != nil &&
 			stats.GetApproximateBacklogCount() > 0 &&
-			stats.GetTasksAddRate() > 0
-	}, 30*time.Second, 500*time.Millisecond, "expected backlog count and add rate to be reported")
+			stats.GetTasksAddRate() > 0 &&
+			len(vtq.GetStatsByPriorityKey()) > 0
+	}, 30*time.Second, 500*time.Millisecond, "expected backlog count, add rate, and per-priority stats to be reported")
 
 	// Drain the backlog with a fresh worker; dispatching tasks yields a non-zero dispatch rate.
 	w2 := startVersionedWorker(t, cli, taskQueue, deploymentName, buildID)
 	t.Cleanup(w2.Stop)
 
 	require.Eventually(t, func() bool {
-		stats := describeWorkflowTaskQueueStats(ctx, cli, namespace, version, taskQueue)
+		stats := describeWorkflowTaskQueue(ctx, cli, namespace, version, taskQueue).GetStats()
 		return stats != nil && stats.GetTasksDispatchRate() > 0
 	}, 30*time.Second, 500*time.Millisecond, "expected dispatch rate to be reported after draining")
 }
 
-// describeWorkflowTaskQueueStats describes the version with stats reporting on
-// and returns the reported stats for the workflow task queue named taskQueue,
-// or nil if the queue isn't listed / carries no stats.
-func describeWorkflowTaskQueueStats(ctx context.Context, cli sdkclient.Client, namespace string, version *deploymentpb.WorkerDeploymentVersion, taskQueue string) *taskqueuepb.TaskQueueStats {
+// describeWorkflowTaskQueue describes the version with stats reporting on and
+// returns the entry for the workflow task queue named taskQueue, or nil if the
+// queue isn't listed.
+func describeWorkflowTaskQueue(ctx context.Context, cli sdkclient.Client, namespace string, version *deploymentpb.WorkerDeploymentVersion, taskQueue string) *workflowservice.DescribeWorkerDeploymentVersionResponse_VersionTaskQueue {
 	resp, err := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
 		&workflowservice.DescribeWorkerDeploymentVersionRequest{
 			Namespace:            namespace,
@@ -2019,10 +2540,45 @@ func describeWorkflowTaskQueueStats(ctx context.Context, cli sdkclient.Client, n
 	}
 	for _, vtq := range resp.GetVersionTaskQueues() {
 		if vtq.GetName() == taskQueue && vtq.GetType() == enumspb.TASK_QUEUE_TYPE_WORKFLOW {
-			return vtq.GetStats()
+			return vtq
 		}
 	}
 	return nil
+}
+
+// requireVersionDeleted waits until the version is gone from both
+// DescribeWorkerDeploymentVersion and the deployment's version summaries.
+func requireVersionDeleted(t *testing.T, env *testcore.TestEnv, version *deploymentpb.WorkerDeploymentVersion) {
+	t.Helper()
+	ctx := env.Context()
+	cli := env.SdkClient()
+	namespace := env.Namespace().String()
+
+	require.Eventually(t, func() bool {
+		_, err := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+			&workflowservice.DescribeWorkerDeploymentVersionRequest{
+				Namespace:         namespace,
+				DeploymentVersion: version,
+			})
+		var notFound *serviceerror.NotFound
+		if !errors.As(err, &notFound) {
+			return false
+		}
+		resp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
+			&workflowservice.DescribeWorkerDeploymentRequest{
+				Namespace:      namespace,
+				DeploymentName: version.GetDeploymentName(),
+			})
+		if err != nil {
+			return false
+		}
+		for _, s := range resp.GetWorkerDeploymentInfo().GetVersionSummaries() {
+			if s.GetDeploymentVersion().GetBuildId() == version.GetBuildId() {
+				return false
+			}
+		}
+		return true
+	}, 30*time.Second, 500*time.Millisecond, "version %s was not fully deleted", version.GetBuildId())
 }
 
 // Assert deletion protection and error includes wantReason.
@@ -2135,6 +2691,24 @@ func requireNoEvents(t *testing.T, events <-chan string) {
 		t.Fatalf("expected no provider actions, but observed: %q", action)
 	default:
 		// empty, as expected
+	}
+}
+
+// assertNoInvokes fails if an "invoke" action is observed within the window;
+// other actions (e.g. "validate") are ignored.
+func assertNoInvokes(t *testing.T, events <-chan string, window time.Duration, desc string) {
+	t.Helper()
+	deadline := time.After(window)
+	for {
+		select {
+		case action := <-events:
+			if action == "invoke" {
+				t.Fatalf("unexpected invoke %s", desc)
+			}
+			t.Logf("ignoring provider action %s: %s", desc, action)
+		case <-deadline:
+			return
+		}
 	}
 }
 
