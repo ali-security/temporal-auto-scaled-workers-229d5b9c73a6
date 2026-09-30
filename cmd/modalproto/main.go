@@ -48,6 +48,18 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// The version RPC only updates an existing Worker Deployment, so create the
+	// deployment first (normally a poller does this). Tolerate an already-existing one.
+	_, err = c.WorkflowService().CreateWorkerDeployment(ctx, &workflowservice.CreateWorkerDeploymentRequest{
+		Namespace:      *namespace,
+		DeploymentName: *deployment,
+		Identity:       "modalproto",
+		RequestId:      uuid.NewString(),
+	})
+	if err != nil {
+		log.Printf("CreateWorkerDeployment: %v (continuing; may already exist)", err)
+	}
+
 	_, err = c.WorkflowService().CreateWorkerDeploymentVersion(ctx, &workflowservice.CreateWorkerDeploymentVersionRequest{
 		Namespace:         *namespace,
 		DeploymentVersion: &deploymentpb.WorkerDeploymentVersion{DeploymentName: *deployment, BuildId: *buildID},

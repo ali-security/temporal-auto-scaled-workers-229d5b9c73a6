@@ -54,6 +54,35 @@ func TestModalInvokeWorker_Success_PassesIdentityKwargs(t *testing.T) {
 	assert.Equal(t, "build-1", gotKwargs["build_id"])
 }
 
+func TestModalInvokeWorker_ForwardsConfigAsKwargs(t *testing.T) {
+	var gotKwargs map[string]any
+	stubResolveModalFunction(t, &fakeModalFunction{
+		spawnFn: func(_ context.Context, _ []any, kwargs map[string]any) (*modal.FunctionCall, error) {
+			gotKwargs = kwargs
+			return &modal.FunctionCall{}, nil
+		},
+	})
+
+	rc := RequestContext{NamespaceName: "ns", DeploymentName: "dep", DeploymentBuildID: "build-1"}
+	cfg := ComputeProviderConfig{
+		configModalApp:         "gpu-workers",
+		configModalFunction:    "temporal_worker",
+		configModalEnvironment: "compute-testing",
+		"task_queue":           "gpu-tq",
+		"max_seconds":          "60",
+		// Identity wins over a config key that collides with it.
+		"namespace": "wrong",
+	}
+
+	require.NoError(t, (&modalComputeProvider{}).InvokeWorker(t.Context(), rc, cfg))
+	assert.Equal(t, "gpu-tq", gotKwargs["task_queue"])
+	assert.Equal(t, "60", gotKwargs["max_seconds"])
+	assert.Equal(t, "ns", gotKwargs["namespace"])
+	for _, reserved := range []string{configModalApp, configModalFunction, configModalEnvironment} {
+		assert.NotContains(t, gotKwargs, reserved)
+	}
+}
+
 func TestModalInvokeWorker_SpawnError_Wrapped(t *testing.T) {
 	sentinel := errors.New("boom")
 	stubResolveModalFunction(t, &fakeModalFunction{
@@ -107,10 +136,21 @@ func TestModalValidateConfig_ResolveError_Wrapped(t *testing.T) {
 }
 
 func TestModalTarget(t *testing.T) {
+	rc := RequestContext{NamespaceName: "default", DeploymentName: "modal-demo", DeploymentBuildID: "v1"}
+
 	// Deployment name -> app, build ID -> function.
-	app, fn := modalTarget(RequestContext{NamespaceName: "default", DeploymentName: "modal-demo", DeploymentBuildID: "v1"})
+	app, fn := modalTarget(rc, ComputeProviderConfig{})
 	assert.Equal(t, "modal-demo", app)
 	assert.Equal(t, "v1", fn)
+
+	// Config pins either half independently.
+	app, fn = modalTarget(rc, ComputeProviderConfig{configModalApp: "gpu-workers"})
+	assert.Equal(t, "gpu-workers", app)
+	assert.Equal(t, "v1", fn)
+
+	app, fn = modalTarget(rc, ComputeProviderConfig{configModalFunction: "temporal_worker"})
+	assert.Equal(t, "modal-demo", app)
+	assert.Equal(t, "temporal_worker", fn)
 }
 
 func TestModalResolve_RequiresDeploymentAndBuild(t *testing.T) {

@@ -35,3 +35,6 @@ go.work.sum
 
 # Executables produced by temporal repo
 /temporal-auto-scaled-workers
+
+# Prototype client binary
+/modalproto

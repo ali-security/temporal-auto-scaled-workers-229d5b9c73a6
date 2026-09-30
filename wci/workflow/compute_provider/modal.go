@@ -12,8 +12,18 @@ import (
 )
 
 const (
+	configModalApp         = "app"
+	configModalFunction    = "function"
 	configModalEnvironment = "environment"
 )
+
+// reservedModalConfigKeys address the Modal function itself; every other config key is
+// forwarded to the function as a keyword argument.
+var reservedModalConfigKeys = map[string]struct{}{
+	configModalApp:         {},
+	configModalFunction:    {},
+	configModalEnvironment: {},
+}
 
 type modalComputeProvider struct{}
 
@@ -62,13 +72,18 @@ func (p *modalComputeProvider) invokeWorker(ctx context.Context, rc RequestConte
 	}
 	defer closer()
 
-	// The app+function already identify this WDV; pass the identity so the worker knows
-	// which task queue to poll.
-	kwargs := map[string]any{
-		"namespace":       rc.NamespaceName,
-		"deployment_name": rc.DeploymentName,
-		"build_id":        rc.DeploymentBuildID,
+	// Non-reserved config keys are the function's kwargs, so the worker's knobs (task
+	// queue, lifetime, concurrency) live in the WDV's compute config. Identity is added
+	// last so it cannot be overridden.
+	kwargs := map[string]any{}
+	for k, v := range cfg {
+		if _, reserved := reservedModalConfigKeys[k]; !reserved {
+			kwargs[k] = v
+		}
 	}
+	kwargs["namespace"] = rc.NamespaceName
+	kwargs["deployment_name"] = rc.DeploymentName
+	kwargs["build_id"] = rc.DeploymentBuildID
 
 	// Spawn is fire-and-forget: it returns once Modal accepts the invocation, mirroring
 	// Lambda's async InvocationType: Event. We discard the FunctionCall handle.
@@ -82,11 +97,20 @@ func (p *modalComputeProvider) UpdateWorkerSetSize(_ context.Context, _ RequestC
 	return errors.ErrUnsupported
 }
 
-// modalTarget maps a worker deployment version to its Modal function: the deployment
-// name is the app, the build ID is the function within it. So a new build is a new
-// function in the same app.
-func modalTarget(rc RequestContext) (appName, functionName string) {
-	return rc.DeploymentName, rc.DeploymentBuildID
+// modalTarget resolves the Modal function to spawn. By default a worker deployment
+// version maps onto Modal's own namespacing — the deployment name is the app and the
+// build ID is the function within it, so a new build is a new function. Either half can
+// be pinned in the config when the Modal names don't mirror the WDV.
+func modalTarget(rc RequestContext, cfg ComputeProviderConfig) (appName, functionName string) {
+	appName, _ = cfg[configModalApp].(string)
+	if appName == "" {
+		appName = rc.DeploymentName
+	}
+	functionName, _ = cfg[configModalFunction].(string)
+	if functionName == "" {
+		functionName = rc.DeploymentBuildID
+	}
+	return appName, functionName
 }
 
 // resolveModalFunctionFn builds a Modal client and resolves the target Function. It is a
@@ -95,9 +119,9 @@ func modalTarget(rc RequestContext) (appName, functionName string) {
 var resolveModalFunctionFn = resolveModalFunction
 
 func resolveModalFunction(ctx context.Context, rc RequestContext, cfg ComputeProviderConfig) (modalFunction, func(), error) {
-	appName, functionName := modalTarget(rc)
+	appName, functionName := modalTarget(rc, cfg)
 	if appName == "" || functionName == "" {
-		return nil, nil, fmt.Errorf("modal compute provider requires a deployment name and build ID")
+		return nil, nil, fmt.Errorf("modal compute provider requires %q and %q, or a deployment name and build ID to derive them from", configModalApp, configModalFunction)
 	}
 	environment, _ := cfg[configModalEnvironment].(string)
 
