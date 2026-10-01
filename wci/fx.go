@@ -130,6 +130,15 @@ func ThrottledLoggerRpsFnProvider(serviceConfig *worker.Config) resource.Throttl
 	return func() float64 { return float64(serviceConfig.ThrottledLogRPS()) }
 }
 
+// RegionID lets hosting binaries supply the region they are hosted in without importing workercomponent.
+type RegionID = workercomponent.RegionID
+
+// regionIDParams keeps the region optional so hosts that don't supply one still start.
+type regionIDParams struct {
+	fx.In
+	RegionID RegionID `optional:"true"`
+}
+
 func PerNamespaceWorkerManagerProvider(
 	logger log.Logger,
 	sdkClientFactory sdk.ClientFactory,
@@ -138,9 +147,10 @@ func PerNamespaceWorkerManagerProvider(
 	config *worker.Config,
 	clusterMetadata cluster.Metadata,
 	dynamicConfig *dynamicconfig.Collection,
+	region regionIDParams,
 ) *worker.PerNamespaceWorkerManager {
 	components := []workercommon.PerNSWorkerComponent{
-		workercomponent.NewWCIPerNSWorkerComponent(dynamicConfig, sdkClientFactory),
+		workercomponent.NewWCIPerNSWorkerComponent(dynamicConfig, sdkClientFactory, region.RegionID),
 	}
 
 	return worker.NewPerNamespaceWorkerManager(

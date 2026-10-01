@@ -93,6 +93,33 @@ A WCI spec is a map of named scaling groups:
 
 A group with no `task_types` acts as a catch-all for any task type not claimed by another group. At most one catch-all group is allowed. The `scaling` block is optional; omitting it leaves the group with the default scaling configuration for the given compute provider.
 
+### Region-scoped groups
+
+A group may set `region_id` (e.g. `aws-us-east-1`) so its compute is used only by the worker controller hosted in that region. The hosting binary supplies its region by providing a `wci.RegionID` through fx (if none is provided, only groups without `region_id` apply). Because a worker controller only receives traffic while the namespace is active in its region, a region-scoped group serves the namespace exactly when the namespace is active in that region. For each task type, the serving group is chosen in this order:
+
+1. A group with this host's `region_id` that lists the task type
+2. The catch-all group (no `task_types`) with this host's `region_id`
+3. A group without `region_id` that lists the task type
+4. The catch-all group without `region_id`
+
+Task types must be unique, and at most one catch-all is allowed, per `region_id`. Groups scoped to a different region are not scaled; their scaling status is kept so they resume after a failback.
+
+```json
+{
+  "scaling_group_specs": {
+    "workflows": {
+      "task_types": ["WORKFLOW"],
+      "compute": { "provider_type": "aws-lambda", "config": { "arn": "arn:aws:lambda:us-east-1:123456789012:function:my-worker" } }
+    },
+    "workflows-west": {
+      "task_types": ["WORKFLOW"],
+      "region_id": "aws-us-west-2",
+      "compute": { "provider_type": "aws-lambda", "config": { "arn": "arn:aws:lambda:us-west-2:123456789012:function:my-worker" } }
+    }
+  }
+}
+```
+
 ### `no-sync` algorithm config
 
 | Key | Default | Description |

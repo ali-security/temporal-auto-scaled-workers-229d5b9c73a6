@@ -798,9 +798,9 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 					Request:         *taskAddRequest,
 					ScalingGroupKey: action.ScalingGroupKey,
 
-					ScalingGroupSpec:   spec,
-					EffectiveTaskTypes: d.State.Spec.EffectiveTaskTypesForGroup(action.ScalingGroupKey),
-					ScalingStatus:      d.State.ScalingStatus[action.ScalingGroupKey],
+					ScalingGroupSpec: spec,
+					Spec:             d.State.Spec,
+					ScalingStatus:    d.State.ScalingStatus[action.ScalingGroupKey],
 				},
 			).Get(ctx, &resp); err != nil {
 				d.logger.Error("Failed to process deferred scaling decision", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "scaling_group_key", action.ScalingGroupKey, "error", err)

@@ -12,6 +12,7 @@ type (
 	componentDeps struct {
 		fx.In
 		ClientFactory sdk.ClientFactory
+		RegionID      RegionID `optional:"true"`
 	}
 
 	fxResult struct {
@@ -29,6 +30,6 @@ func NewResult(
 	params componentDeps,
 ) fxResult {
 	return fxResult{
-		Component: NewWCIPerNSWorkerComponent(dc, params.ClientFactory),
+		Component: NewWCIPerNSWorkerComponent(dc, params.ClientFactory, params.RegionID),
 	}
 }

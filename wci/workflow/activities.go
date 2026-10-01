@@ -46,6 +46,9 @@ type (
 		dc                    *dynamicconfig.Collection
 		namespace             *namespace.Namespace
 		workflowserviceClient workflowservice.WorkflowServiceClient
+		// regionID selects region-scoped scaling groups. Only used in activities, as it differs
+		// across cells and would break workflow replay after a failover.
+		regionID string
 	}
 
 	// RequestContext aliases the compute-provider request context so activity
@@ -93,8 +96,11 @@ type (
 		Request         iface.SignalTaskAddRequest `json:"request"`
 		ScalingGroupKey string                     `json:"scaling_group_key"`
 
-		ScalingGroupSpec   iface.ScalingGroupSpec       `json:"scaling_group_spec"`
-		EffectiveTaskTypes []enumspb.TaskQueueType      `json:"effective_task_types"`
+		ScalingGroupSpec iface.ScalingGroupSpec `json:"scaling_group_spec"`
+		// Spec resolves effective task types against the host region.
+		Spec *iface.WorkerControllerInstanceSpec `json:"spec,omitempty"`
+		// Deprecated: fallback for activities scheduled before Spec was added.
+		EffectiveTaskTypes []enumspb.TaskQueueType      `json:"effective_task_types,omitempty"`
 		ScalingStatus      iface.ScalingAlgorithmStatus `json:"scaling_status"`
 	}
 
@@ -170,11 +176,13 @@ func NewActivities(
 	namespace *namespace.Namespace,
 	dc *dynamicconfig.Collection,
 	workflowserviceClient workflowservice.WorkflowServiceClient,
+	regionID string,
 ) *Activities {
 	return &Activities{
 		dc:                    dc,
 		namespace:             namespace,
 		workflowserviceClient: workflowserviceClient,
+		regionID:              regionID,
 	}
 }
 
@@ -289,9 +297,16 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 			updatedScalingStatus[k] = prior
 		}
 
+		effectiveTaskTypes := req.EffectiveTaskTypesForGroup(k, a.regionID)
+		// Groups serving nothing here (other region, or shadowed) must not launch workers.
+		if len(effectiveTaskTypes) == 0 {
+			logger.Debug("Scaling group serves no task types in this region; skipping worker invocation", "scaling_group_key", k, "region_id", a.regionID)
+			continue
+		}
+
 		// Skip groups whose task types are all already registered: a worker of that type
 		// has polled before, so the queue exists and any live worker set must not be disturbed.
-		if taskTypesAllRegistered(req.EffectiveTaskTypesForGroup(k), registered) {
+		if taskTypesAllRegistered(effectiveTaskTypes, registered) {
 			logger.Debug("Task queues already registered; skipping worker invocation", "scaling_group_key", k)
 			continue
 		}
@@ -441,7 +456,12 @@ func (a *Activities) HandleDeferredScalingDecision(ctx context.Context, req Hand
 
 	scalingStatus := maps.Clone(req.ScalingStatus)
 
-	if !slices.Contains(req.EffectiveTaskTypes, req.Request.TaskQueueType) {
+	effectiveTaskTypes := req.EffectiveTaskTypes
+	if req.Spec != nil {
+		effectiveTaskTypes = req.Spec.EffectiveTaskTypesForGroup(req.ScalingGroupKey, a.regionID)
+	}
+
+	if !slices.Contains(effectiveTaskTypes, req.Request.TaskQueueType) {
 		logger.Warn("Deferred scaling decision does not match scaling group task types", "scaling_group_key", req.ScalingGroupKey, "task_queue_type", req.Request.TaskQueueType)
 		recordSkipped(wcimetrics.SkippedReasonTaskTypeMismatch)
 		return &HandleDeferredScalingDecisionActivityResponse{UpdatedScalingStatus: scalingStatus}, nil
@@ -469,7 +489,7 @@ func (a *Activities) HandleDeferredScalingDecision(ctx context.Context, req Hand
 		if err != nil {
 			return nil, err
 		}
-		return filterScalingMetricsSnapshotByTaskTypes(metricsSnapshot, req.EffectiveTaskTypes), nil
+		return filterScalingMetricsSnapshotByTaskTypes(metricsSnapshot, effectiveTaskTypes), nil
 	}
 
 	response, err := scalingAlgo.ProcessDeferredScalingDecision(ctx, scalingConfig, scalingStatus, req.Request, getScalingMetricsSnapshot)
@@ -518,7 +538,7 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 	}
 
 	for key, entry := range req.Spec.ScalingGroupSpecs {
-		scalingGroupEffectiveTaskTypes := req.Spec.EffectiveTaskTypesForGroup(key)
+		scalingGroupEffectiveTaskTypes := req.Spec.EffectiveTaskTypesForGroup(key, a.regionID)
 
 		if !slices.Contains(scalingGroupEffectiveTaskTypes, req.Request.TaskQueueType) {
 			continue
@@ -613,7 +633,12 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 
 	for key, entry := range req.Spec.ScalingGroupSpecs {
 		scalingStatus := req.ScalingStatus[key]
-		scalingGroupEffectiveTaskTypes := req.Spec.EffectiveTaskTypesForGroup(key)
+		if entry.RegionId != "" && entry.RegionId != a.regionID {
+			// Keep status so the group resumes where it left off if the namespace fails back.
+			updatedScalingStatus[key] = scalingStatus
+			continue
+		}
+		scalingGroupEffectiveTaskTypes := req.Spec.EffectiveTaskTypesForGroup(key, a.regionID)
 
 		scalingMetricsSnapshot := filterScalingMetricsSnapshotByTaskTypes(metricsSnapshot, scalingGroupEffectiveTaskTypes)
 		if scalingMetricsSnapshot == nil {

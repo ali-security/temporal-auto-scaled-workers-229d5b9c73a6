@@ -1,7 +1,9 @@
 package iface
 
 import (
+	"maps"
 	"slices"
+	"strings"
 
 	"google.golang.org/protobuf/proto"
 
@@ -29,11 +31,13 @@ type (
 		Config           *commonpb.Payload    `json:"config,omitempty"`
 	}
 
-	// ScalingGroupSpec is one entry: a list of task types and the compute/scaling spec that applies to them.
+	// ScalingGroupSpec is one entry: a list of task types (and optionally a region) and the compute/scaling spec that applies to them.
 	ScalingGroupSpec struct {
 		TaskTypes []enumspb.TaskQueueType `json:"task_types"`
-		Compute   ComputeProviderSpec     `json:"compute"`
-		Scaling   *ScalingAlgorithmSpec   `json:"scaling,omitempty"`
+		// RegionId restricts the group to worker controllers hosted in this region.
+		RegionId string                `json:"region_id,omitempty"`
+		Compute  ComputeProviderSpec   `json:"compute"`
+		Scaling  *ScalingAlgorithmSpec `json:"scaling,omitempty"`
 	}
 
 	ScalingGroupSpecUpdate struct {
@@ -93,28 +97,48 @@ func ValidScalingAlgorithmType(s string) bool {
 	return false
 }
 
-// ForTaskQueueType returns the ScalingGroupSpec for the given task queue type (first entry whose TaskTypes contain t). Returns nil if none applies.
-func (c *WorkerControllerInstanceSpec) ForTaskQueueType(t enumspb.TaskQueueType) *ScalingGroupSpec {
+var scalableTaskQueueTypes = []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_ACTIVITY, enumspb.TASK_QUEUE_TYPE_NEXUS, enumspb.TASK_QUEUE_TYPE_WORKFLOW}
+
+// ownerForTaskQueueType returns the ID of the scaling group serving t in regionId, or "" if none.
+// Precedence: (region, type) > (region, catch-all) > (any region, type) > (any region, catch-all).
+func (c *WorkerControllerInstanceSpec) ownerForTaskQueueType(t enumspb.TaskQueueType, regionId string) string {
 	if c == nil {
-		return nil
+		return ""
 	}
-	for _, v := range c.ScalingGroupSpecs {
-		if slices.Contains(v.TaskTypes, t) {
-			localCopy := v
-			return &localCopy
+	regions := []string{""}
+	if regionId != "" {
+		regions = []string{regionId, ""}
+	}
+	// Validate guarantees at most one candidate per tier; sorted keys keep this deterministic regardless.
+	keys := slices.Sorted(maps.Keys(c.ScalingGroupSpecs))
+	for _, region := range regions {
+		for _, k := range keys {
+			if v := c.ScalingGroupSpecs[k]; v.RegionId == region && slices.Contains(v.TaskTypes, t) {
+				return k
+			}
+		}
+		for _, k := range keys {
+			if v := c.ScalingGroupSpecs[k]; v.RegionId == region && len(v.TaskTypes) == 0 {
+				return k
+			}
 		}
 	}
-	// as there should be only max one scaling group without types, this is still deterministic
-	for _, v := range c.ScalingGroupSpecs {
-		if len(v.TaskTypes) == 0 {
-			localCopy := v
-			return &localCopy
-		}
-	}
-	return nil
+	return ""
 }
 
-func (c *WorkerControllerInstanceSpec) EffectiveTaskTypesForGroup(scalingGroupId string) []enumspb.TaskQueueType {
+// ForTaskQueueType returns the ScalingGroupSpec serving the given task queue type in regionId. Returns nil if none applies.
+func (c *WorkerControllerInstanceSpec) ForTaskQueueType(t enumspb.TaskQueueType, regionId string) *ScalingGroupSpec {
+	owner := c.ownerForTaskQueueType(t, regionId)
+	if owner == "" {
+		return nil
+	}
+	localCopy := c.ScalingGroupSpecs[owner]
+	return &localCopy
+}
+
+// EffectiveTaskTypesForGroup returns the task types the group serves in regionId. Empty if the group
+// is scoped to another region or fully shadowed by more specific groups.
+func (c *WorkerControllerInstanceSpec) EffectiveTaskTypesForGroup(scalingGroupId string, regionId string) []enumspb.TaskQueueType {
 	if c == nil {
 		return nil
 	}
@@ -124,35 +148,30 @@ func (c *WorkerControllerInstanceSpec) EffectiveTaskTypesForGroup(scalingGroupId
 		return nil
 	}
 
-	if len(scalingGroup.TaskTypes) > 0 {
-		return scalingGroup.TaskTypes
+	candidates := scalingGroup.TaskTypes
+	if len(candidates) == 0 {
+		candidates = scalableTaskQueueTypes
 	}
 
-	seen := []enumspb.TaskQueueType{}
-	for _, v := range c.ScalingGroupSpecs {
-		seen = append(seen, v.TaskTypes...)
-	}
-
-	catchAll := []enumspb.TaskQueueType{}
-	for _, t := range []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_ACTIVITY, enumspb.TASK_QUEUE_TYPE_NEXUS, enumspb.TASK_QUEUE_TYPE_WORKFLOW} {
-		if !slices.Contains(seen, t) {
-			catchAll = append(catchAll, t)
+	effective := []enumspb.TaskQueueType{}
+	for _, t := range candidates {
+		if c.ownerForTaskQueueType(t, regionId) == scalingGroupId {
+			effective = append(effective, t)
 		}
 	}
-
-	return catchAll
+	return effective
 }
 
-// ScalingSpecForTaskQueueType returns the ScalingAlgorithmSpec for the given task queue type. Returns nil if task queue type is not found or Scaling is nil.
-func (c *WorkerControllerInstanceSpec) ScalingSpecForTaskQueueType(t enumspb.TaskQueueType) *ScalingAlgorithmSpec {
-	taskQueueTypeSpec := c.ForTaskQueueType(t)
+// ScalingSpecForTaskQueueType returns the ScalingAlgorithmSpec for the given task queue type in regionId. Returns nil if task queue type is not found or Scaling is nil.
+func (c *WorkerControllerInstanceSpec) ScalingSpecForTaskQueueType(t enumspb.TaskQueueType, regionId string) *ScalingAlgorithmSpec {
+	taskQueueTypeSpec := c.ForTaskQueueType(t, regionId)
 	if taskQueueTypeSpec == nil {
 		return nil
 	}
 	return taskQueueTypeSpec.Scaling
 }
 
-// Validate ensures at least one entry, no duplicate task types, and each entry has valid spec.
+// Validate ensures at least one entry, no duplicate task types per region, and each entry has valid spec.
 func (c *WorkerControllerInstanceSpec) Validate() error {
 	if c == nil {
 		return serviceerror.NewInvalidArgumentf("spec must be provided")
@@ -161,26 +180,40 @@ func (c *WorkerControllerInstanceSpec) Validate() error {
 		return serviceerror.NewInvalidArgumentf("spec must have at least one entry")
 	}
 
-	seen := make(map[enumspb.TaskQueueType]struct{})
-	seenTaskTypeCatchAll := false
+	type regionTaskType struct {
+		region   string
+		taskType enumspb.TaskQueueType
+	}
+	seen := make(map[regionTaskType]struct{})
+	seenTaskTypeCatchAll := make(map[string]struct{})
 	for k, v := range c.ScalingGroupSpecs {
 		if len(k) == 0 {
 			return serviceerror.NewInvalidArgument("scaling groups without an ID are not supported")
 		}
+		if v.RegionId != strings.TrimSpace(v.RegionId) {
+			return serviceerror.NewInvalidArgumentf("entry %s: region id '%s' must not have leading or trailing whitespace", k, v.RegionId)
+		}
 		if len(v.TaskTypes) == 0 {
-			if seenTaskTypeCatchAll {
-				return serviceerror.NewInvalidArgumentf("entry %s: only one scaling group can have no task types defined", k)
+			if _, ok := seenTaskTypeCatchAll[v.RegionId]; ok {
+				if v.RegionId == "" {
+					return serviceerror.NewInvalidArgumentf("entry %s: only one scaling group can have no task types defined", k)
+				}
+				return serviceerror.NewInvalidArgumentf("entry %s: only one scaling group in region %s can have no task types defined", k, v.RegionId)
 			}
-			seenTaskTypeCatchAll = true
+			seenTaskTypeCatchAll[v.RegionId] = struct{}{}
 		}
 		for _, t := range v.TaskTypes {
-			if _, ok := seen[t]; ok {
-				return serviceerror.NewInvalidArgumentf("entry %s: task type %s appears in more than one entry", k, t.String())
+			key := regionTaskType{region: v.RegionId, taskType: t}
+			if _, ok := seen[key]; ok {
+				if v.RegionId == "" {
+					return serviceerror.NewInvalidArgumentf("entry %s: task type %s appears in more than one entry", k, t.String())
+				}
+				return serviceerror.NewInvalidArgumentf("entry %s: task type %s appears in more than one entry for region %s", k, t.String(), v.RegionId)
 			}
 			if t == enumspb.TASK_QUEUE_TYPE_UNSPECIFIED {
 				return serviceerror.NewInvalidArgumentf("entry %s: task type undefined not allowed in compute spec", k)
 			}
-			seen[t] = struct{}{}
+			seen[key] = struct{}{}
 		}
 		if !ValidComputeProviderType(string(v.Compute.ProviderType)) {
 			return serviceerror.NewInvalidArgumentf("entry %s: invalid compute provider type '%s'", k, v.Compute.ProviderType)
@@ -213,6 +246,7 @@ func (config ScalingAlgorithmConfig) ValidateFloat64Field(key string, minValidVa
 func (c *ScalingGroupSpec) Clone() *ScalingGroupSpec {
 	cloned := &ScalingGroupSpec{
 		TaskTypes: slices.Clone(c.TaskTypes),
+		RegionId:  c.RegionId,
 		Compute: ComputeProviderSpec{
 			ProviderType:  c.Compute.ProviderType,
 			NexusEndpoint: c.Compute.NexusEndpoint,

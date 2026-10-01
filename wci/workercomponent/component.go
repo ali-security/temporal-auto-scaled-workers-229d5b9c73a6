@@ -16,14 +16,19 @@ import (
 )
 
 type (
+	// RegionID is the region this worker controller is hosted in (e.g. aws-us-east-1). Supplied by
+	// the hosting binary; empty means only scaling groups without a region apply.
+	RegionID string
+
 	workerComponent struct {
 		dynamicConfig    *dynamicconfig.Collection
 		sdkClientFactory sdk.ClientFactory
+		regionID         RegionID
 	}
 )
 
-func NewWCIPerNSWorkerComponent(dc *dynamicconfig.Collection, sdkClientFactory sdk.ClientFactory) workercommon.PerNSWorkerComponent {
-	return &workerComponent{dynamicConfig: dc, sdkClientFactory: sdkClientFactory}
+func NewWCIPerNSWorkerComponent(dc *dynamicconfig.Collection, sdkClientFactory sdk.ClientFactory, regionID RegionID) workercommon.PerNSWorkerComponent {
+	return &workerComponent{dynamicConfig: dc, sdkClientFactory: sdkClientFactory, regionID: regionID}
 }
 
 func (s *workerComponent) DedicatedWorkerOptions(ns *namespace.Namespace) *workercommon.PerNSDedicatedWorkerOptions {
@@ -38,7 +43,7 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 		DataConverter: sdk.PreferProtoDataConverter,
 	})
 
-	activities := instancewf.NewActivities(ns, s.dynamicConfig, sdkClient.WorkflowService())
+	activities := instancewf.NewActivities(ns, s.dynamicConfig, sdkClient.WorkflowService(), string(s.regionID))
 	versionWorkflow := func(ctx workflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) error {
 		workflowVersionGetter := func() instancewf.WorkerControllerInstanceWorkflowVersion {
 			return instancewf.WorkerControllerInstanceWorkflowVersion(client.WorkerControllerInstanceWorkflowVersion.Get(s.dynamicConfig)(ns.Name().String()))
