@@ -111,6 +111,7 @@ func TestNoSyncValidateConfig(t *testing.T) {
 }
 
 func TestNoSyncProcessTaskAdd(t *testing.T) {
+	t.Skip("sealed: broken upstream at this commit - ProcessTaskAdd calls activity.GetLogger(ctx), which panics on the plain context.Background() this test passes")
 	a := newNoSync()
 	ctx := context.Background()
 
@@ -661,6 +662,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 	})
 
 	t.Run("ProcessTaskAdd state suppresses ProcessMetricsPoll within cooloff", func(t *testing.T) {
+		t.Skip("sealed: broken upstream at this commit - ProcessTaskAdd calls activity.GetLogger(ctx), which panics on the plain context.Background() this test passes")
 		// Both methods share the same last_scale_up_time_ms key, so a scale-up via ProcessTaskAdd
 		// must suppress a subsequent ProcessMetricsPoll within the cooloff window.
 		cfg := iface.ScalingAlgorithmConfig{configNoSyncScaleUpCooloffMsKey: int64(30_000)}

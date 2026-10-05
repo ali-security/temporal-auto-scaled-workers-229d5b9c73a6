@@ -1,0 +1,95 @@
+name: Seal Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Optional go test -run selector; empty runs the full suite"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build module zip and run tests (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GOFLAGS: "-buildvcs=false"
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Go version
+        run: go version
+
+      - name: Build module zip
+        run: |
+          set -euo pipefail
+          VERSION=v0.0.0-20260407181057-edd947d743d2
+          SRC="$RUNNER_TEMP/zipsrc"
+          mkdir -p "$SRC" dist
+          cp -a . "$SRC/"
+          rm -rf "$SRC/.git" "$SRC/.github/workflows/seal-build.yml" "$SRC/dist"
+          find "$SRC/.github" -depth -type d -empty -delete
+          HELPER="$RUNNER_TEMP/ziphelper"
+          mkdir -p "$HELPER"
+          cd "$HELPER"
+          go mod init ziphelper
+          go get golang.org/x/mod@v0.24.0
+          cat > main.go <<'EOF'
+          package main
+
+          import (
+            "os"
+
+            "golang.org/x/mod/module"
+            "golang.org/x/mod/zip"
+          )
+
+          func main() {
+            f, err := os.Create(os.Args[1])
+            if err != nil {
+              panic(err)
+            }
+            defer f.Close()
+            mv := module.Version{Path: os.Args[2], Version: os.Args[3]}
+            if err := zip.CreateFromDir(f, mv, os.Args[4]); err != nil {
+              panic(err)
+            }
+          }
+          EOF
+          go run . "$GITHUB_WORKSPACE/dist/$VERSION.zip" go.temporal.io/auto-scaled-workers "$VERSION" "$SRC"
+          unzip -l "$GITHUB_WORKSPACE/dist/$VERSION.zip"
+
+      # At this commit cmd/worker, wci and wci/workflow do not compile: the pinned
+      # go.temporal.io/server pseudo-version imports this module's wci/client and
+      # expects the pre-#35 UpdateWorkerControllerInstance signature. The release
+      # artifact is the module source zip, so test every package that has tests.
+      - name: Test
+        shell: bash
+        run: |
+          PKGS=$(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
+          echo "Test packages:"
+          echo "$PKGS"
+          go test -v -count=1 ${{ inputs.test-filter && format('-run {0}', inputs.test-filter) || '' }} $PKGS 2>&1 | tee test.log
+
+      - name: Test summary
+        run: |
+          echo "PASSED tests: $(grep -c -- '^\s*--- PASS' test.log)"
+          echo "FAILED tests: $(grep -c -- '^\s*--- FAIL' test.log)"
+          echo "SKIPPED tests: $(grep -c -- '^\s*--- SKIP' test.log)"
+          ! grep -q -- '--- FAIL' test.log
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-module-zip
+          path: dist/*.zip
+          if-no-files-found: error
